@@ -17,7 +17,7 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { DispatcherDirectMessage, EquipmentAlert } from '../types/dispatch';
+import { DispatcherDirectMessage, EquipmentAlert, Truck, TripLog } from '../types/dispatch';
 
 // Ensure Firebase is initialized
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -304,6 +304,144 @@ export async function fetchCloudEquipmentAlerts(): Promise<EquipmentAlert[]> {
     const list: EquipmentAlert[] = [];
     snap.forEach((d) => {
       list.push(d.data() as EquipmentAlert);
+    });
+    return list;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return [];
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4c-1. Individual Truck Live State Sync (Zero-Overwrite Concurrency for 60+ Dumpers)
+// Each truck writes ONLY to its own document `/fleet_trucks/{truckId}` with merge: true
+// ----------------------------------------------------------------------
+export async function syncTruckLiveStateToCloud(
+  truckId: string,
+  state: Partial<Truck>,
+  updatedBy: string = 'InCabTablet'
+): Promise<void> {
+  if (!truckId) return;
+  const path = `fleet_trucks/${truckId}`;
+  try {
+    const payload = {
+      ...state,
+      id: truckId,
+      lastUpdated: new Date().toISOString(),
+      updatedBy,
+    };
+    const cleanPayload = Object.fromEntries(
+      Object.entries(payload).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'fleet_trucks', truckId), cleanPayload, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export function subscribeToFleetTrucks(
+  callback: (trucksMap: Record<string, Partial<Truck>>) => void
+): Unsubscribe {
+  const path = 'fleet_trucks';
+  try {
+    return onSnapshot(
+      collection(db, path),
+      (snapshot) => {
+        const map: Record<string, Partial<Truck>> = {};
+        snapshot.forEach((d) => {
+          map[d.id] = d.data() as Partial<Truck>;
+        });
+        callback(map);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+export async function fetchFleetTrucksFromCloud(): Promise<Record<string, Partial<Truck>>> {
+  const path = 'fleet_trucks';
+  try {
+    const snap = await getDocs(collection(db, path));
+    const map: Record<string, Partial<Truck>> = {};
+    snap.forEach((d) => {
+      map[d.id] = d.data() as Partial<Truck>;
+    });
+    return map;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return {};
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4c-2. Distinct Haulage Trips Cloud Sync (Cumulative & Distinct Paths per Truck)
+// Writes to:
+//   1. /fleet_trips/{tripId} (Distinct cumulative stream across 60+ dumpers)
+//   2. /fleet_trucks/{truckId}/trips/{tripId} (Dedicated path for each truck)
+// ----------------------------------------------------------------------
+export async function syncTripToCloud(trip: TripLog): Promise<void> {
+  if (!trip || !trip.id || !trip.truckId) return;
+  const path = `fleet_trips/${trip.id}`;
+  try {
+    const cleanTrip = Object.fromEntries(
+      Object.entries({
+        ...trip,
+        synced: true,
+        cloudSyncedAt: new Date().toISOString(),
+      }).filter(([_, v]) => v !== undefined)
+    );
+
+    // 1. Primary distinct cumulative trip path
+    await setDoc(doc(db, 'fleet_trips', trip.id), cleanTrip, { merge: true });
+
+    // 2. Dedicated truck subpath: /fleet_trucks/{truck_id}/trips/{trip_id}
+    try {
+      await setDoc(doc(db, 'fleet_trucks', trip.truckId, 'trips', trip.id), cleanTrip, { merge: true });
+    } catch {}
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export function subscribeToCloudFleetTrips(
+  callback: (trips: TripLog[]) => void,
+  limitCount: number = 300
+): Unsubscribe {
+  const path = 'fleet_trips';
+  try {
+    const q = query(collection(db, path), orderBy('dumpTime', 'desc'), limit(limitCount));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: TripLog[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as TripLog);
+        });
+        callback(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+export async function fetchCloudFleetTrips(limitCount: number = 300): Promise<TripLog[]> {
+  const path = 'fleet_trips';
+  try {
+    const q = query(collection(db, path), orderBy('dumpTime', 'desc'), limit(limitCount));
+    const snap = await getDocs(q);
+    const list: TripLog[] = [];
+    snap.forEach((d) => {
+      list.push(d.data() as TripLog);
     });
     return list;
   } catch (err) {

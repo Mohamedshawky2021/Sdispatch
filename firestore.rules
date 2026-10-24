@@ -47,7 +47,25 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Cloud synchronized haulage trips
+    // Distinct per-truck independent state (prevents multi-truck concurrency overwrite)
+    match /fleet_trucks/{truckId} {
+      allow read: if true;
+      allow write: if isValidId(truckId);
+
+      // Dedicated per-truck trip path (/fleet_trucks/{truck_id}/trips/{trip_id})
+      match /trips/{tripId} {
+        allow read: if true;
+        allow write: if isValidId(tripId);
+      }
+    }
+
+    // Cumulative and real-time distinct trips across all 60+ dumpers
+    match /fleet_trips/{tripId} {
+      allow read: if true;
+      allow write: if isValidId(tripId);
+    }
+
+    // Cloud synchronized haulage trips (legacy compatibility)
     match /cloud_trips/{tripId} {
       allow read: if true;
       allow create, update: if isValidId(tripId)

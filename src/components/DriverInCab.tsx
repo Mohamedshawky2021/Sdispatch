@@ -744,7 +744,7 @@ export const DriverInCab: React.FC<Props> = ({
     const payload = 152; // Exactly 152 tonnes as requested
 
     const tripRecord: TripLog = {
-      id: `TRIP-${Date.now().toString().slice(-6)}`,
+      id: `TRIP-${currentTruck.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       shiftDate: new Date().toISOString().split('T')[0],
       shiftType: 'MORNING',
       driverCode: currentDriver.code,

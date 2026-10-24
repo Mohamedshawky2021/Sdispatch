@@ -410,7 +410,7 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
 
     const updated = [...trucks, newTruck];
     setTrucks(updated);
-    saveTrucks(updated);
+    saveTrucks(updated, true);
     setNewTruckId('');
     showStatus(`تمت إضافة الشاحنة ${newTruck.id} بنجاح، وظهرت لكل السائقين.`);
     onDataChanged();
@@ -424,7 +424,7 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
     }
     const updated = trucks.filter(t => t.id !== id);
     setTrucks(updated);
-    saveTrucks(updated);
+    saveTrucks(updated, true);
     showStatus(`تم حذف الشاحنة ${id}.`);
     onDataChanged();
   };

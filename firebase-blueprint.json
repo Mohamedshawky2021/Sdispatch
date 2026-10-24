@@ -129,6 +129,18 @@
       "schema": "ShiftLog",
       "description": "Operator shift records and handovers"
     },
+    "/fleet_trucks/{truckId}": {
+      "schema": "EquipmentPresence",
+      "description": "Per-truck independent live state preventing multi-truck concurrency overwrite"
+    },
+    "/fleet_trucks/{truckId}/trips/{tripId}": {
+      "schema": "TripRecord",
+      "description": "Per-truck dedicated trip logs"
+    },
+    "/fleet_trips/{tripId}": {
+      "schema": "TripRecord",
+      "description": "Cumulative real-time haulage trips across all mining trucks"
+    },
     "/cloud_trips/{tripId}": {
       "schema": "TripRecord",
       "description": "Mining haulage trips synced to cloud"

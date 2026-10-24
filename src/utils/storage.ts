@@ -27,6 +27,12 @@ import {
   syncEquipmentAlertToCloud,
   subscribeToCloudEquipmentAlerts,
   fetchCloudEquipmentAlerts,
+  syncTruckLiveStateToCloud,
+  subscribeToFleetTrucks,
+  fetchFleetTrucksFromCloud,
+  syncTripToCloud,
+  subscribeToCloudFleetTrips,
+  fetchCloudFleetTrips,
 } from './firebaseSync';
 
 const STORAGE_KEYS = {
@@ -364,27 +370,70 @@ export function getStoredTrucks(): Truck[] {
   }
 }
 
-export function saveTrucks(trucks: Truck[]) {
+export function saveTrucks(trucks: Truck[], syncMaster: boolean = false) {
   if (typeof window === 'undefined') return;
   localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(trucks));
   broadcastDataChange('TRUCKS_UPDATED', trucks);
-  syncMasterDataToCloud('trucks', trucks);
+  // Only sync to master data if explicitly requested by Admin configuration changes
+  if (syncMaster) {
+    syncMasterDataToCloud('trucks', trucks);
+  }
 }
 
 export function updateTruckStatus(truckId: string, status: EquipmentStatusCode, statusNote?: string) {
   const current = getStoredTrucks();
+  const lastChange = new Date().toISOString();
+  let targetTruck: Truck | undefined;
+
+  const updated = current.map(t => {
+    if (t.id === truckId) {
+      targetTruck = {
+        ...t,
+        status,
+        statusNote: statusNote !== undefined ? statusNote : t.statusNote,
+        lastStatusChange: lastChange,
+      };
+      return targetTruck;
+    }
+    return t;
+  });
+
+  // 1. Update local storage immediately for current tablet
+  localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(updated));
+  broadcastDataChange('TRUCKS_UPDATED', updated);
+
+  // 2. Sync ONLY this truck's independent document to Cloud Firestore (/fleet_trucks/{truckId})
+  // This NEVER overwrites any of the other 59 trucks!
+  syncTruckLiveStateToCloud(truckId, {
+    status,
+    statusNote: statusNote !== undefined ? statusNote : (targetTruck?.statusNote || ''),
+    lastStatusChange: lastChange,
+  }).catch(console.error);
+}
+
+export function updateTruckLiveState(truckId: string, partial: Partial<Truck>) {
+  const current = getStoredTrucks();
+  const lastChange = new Date().toISOString();
+
   const updated = current.map(t => {
     if (t.id === truckId) {
       return {
         ...t,
-        status,
-        statusNote: statusNote !== undefined ? statusNote : t.statusNote,
-        lastStatusChange: new Date().toISOString(),
+        ...partial,
+        lastStatusChange: lastChange,
       };
     }
     return t;
   });
-  saveTrucks(updated);
+
+  localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(updated));
+  broadcastDataChange('TRUCKS_UPDATED', updated);
+
+  // Sync ONLY this truck's independent path
+  syncTruckLiveStateToCloud(truckId, {
+    ...partial,
+    lastStatusChange: lastChange,
+  }).catch(console.error);
 }
 
 // Tablet-dedicated Truck Assignment & Lock
@@ -645,6 +694,11 @@ export function syncPendingOfflineData(): { syncedTrips: number; syncedHandovers
         trips[idx].synced = true;
         tripsModified = true;
         syncedTrips++;
+        syncTripToCloud(trips[idx]).catch(console.error);
+        syncTruckLiveStateToCloud(trips[idx].truckId, {
+          status: 'ACTIVE',
+          lastStatusChange: new Date().toISOString(),
+        }).catch(console.error);
       }
     } else if (item.type === 'HANDOVER') {
       const idx = handovers.findIndex(h => h.id === item.id);
@@ -679,18 +733,37 @@ export function addTrip(newTrip: TripLog) {
   const updated = [newTrip, ...current];
   saveTrips(updated);
 
-  if (!isOnline) {
+  // 1. Sync trip to cloud immediately using distinct paths (/fleet_trips/{tripId} and /fleet_trucks/{truckId}/trips/{tripId})
+  if (isOnline) {
+    syncTripToCloud(newTrip).catch(console.error);
+  } else {
     addToPendingSyncQueue('TRIP', newTrip.id);
   }
 
-  // Update truck trip count
+  // 2. Update ONLY this truck's trip count and status (Zero-overwrite for all other 59 dumpers!)
   const trucks = getStoredTrucks();
   const truckIndex = trucks.findIndex(t => t.id === newTrip.truckId);
   if (truckIndex >= 0) {
-    trucks[truckIndex].tripsToday = (trucks[truckIndex].tripsToday || 0) + 1;
-    trucks[truckIndex].tonnesToday = (trucks[truckIndex].tonnesToday || 0) + (newTrip.payloadTonnes || 0);
+    const newTripsToday = (trucks[truckIndex].tripsToday || 0) + 1;
+    const newTonnesToday = (trucks[truckIndex].tonnesToday || 0) + (newTrip.payloadTonnes || 152);
+    const nowIso = new Date().toISOString();
+
+    trucks[truckIndex].tripsToday = newTripsToday;
+    trucks[truckIndex].tonnesToday = newTonnesToday;
     trucks[truckIndex].status = 'ACTIVE';
-    saveTrucks(trucks);
+    trucks[truckIndex].lastStatusChange = nowIso;
+
+    // Save locally on this tablet & broadcast to local tabs
+    localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(trucks));
+    broadcastDataChange('TRUCKS_UPDATED', trucks);
+
+    // 3. Sync ONLY this truck's live state to Cloud Firestore
+    syncTruckLiveStateToCloud(newTrip.truckId, {
+      tripsToday: newTripsToday,
+      tonnesToday: newTonnesToday,
+      status: 'ACTIVE',
+      lastStatusChange: nowIso,
+    }).catch(console.error);
   }
   return updated;
 }
@@ -1465,8 +1538,9 @@ export function updateTruckDetails(truckId: string, updates: Partial<Truck>): Tr
     return t;
   });
   if (updatedTruck) {
-    saveTrucks(updated);
+    localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(updated));
     broadcastDataChange('TRUCKS_UPDATED', updated);
+    syncTruckLiveStateToCloud(truckId, updates).catch(console.error);
   }
   return updatedTruck;
 }
@@ -1795,21 +1869,58 @@ export function detectProductionGaps(
 export async function pullCloudMasterData(): Promise<{ success: boolean; syncedItems: string[] }> {
   const syncedItems: string[] = [];
   try {
-    const [trucks, excavators, dumps, drivers, reasons, config, alerts] = await Promise.all([
-      fetchMasterDataFromCloud('trucks'),
-      fetchMasterDataFromCloud('excavators'),
-      fetchMasterDataFromCloud('dumps'),
-      fetchMasterDataFromCloud('drivers'),
-      fetchMasterDataFromCloud('custom_standby_reasons'),
-      fetchMasterDataFromCloud('app_config'),
-      fetchCloudEquipmentAlerts(),
-    ]);
+    const [trucks, excavators, dumps, drivers, reasons, config, alerts, liveTrucksMap, cloudTrips] =
+      await Promise.all([
+        fetchMasterDataFromCloud('trucks'),
+        fetchMasterDataFromCloud('excavators'),
+        fetchMasterDataFromCloud('dumps'),
+        fetchMasterDataFromCloud('drivers'),
+        fetchMasterDataFromCloud('custom_standby_reasons'),
+        fetchMasterDataFromCloud('app_config'),
+        fetchCloudEquipmentAlerts(),
+        fetchFleetTrucksFromCloud(),
+        fetchCloudFleetTrips(300),
+      ]);
 
-    if (trucks && Array.isArray(trucks) && trucks.length > 0) {
-      localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(trucks));
-      broadcastDataChange('TRUCKS_UPDATED', trucks);
-      syncedItems.push('trucks');
+    // 1. Smart merge for trucks: Base definition from master data + live per-truck state from /fleet_trucks/{truckId}
+    const currentTrucks = getStoredTrucks();
+    const currentTrucksMap = new Map<string, Truck>();
+    currentTrucks.forEach(t => currentTrucksMap.set(t.id, t));
+
+    const baseTrucksList = trucks && Array.isArray(trucks) && trucks.length > 0 ? trucks : currentTrucks;
+    const mergedTrucks = baseTrucksList.map((baseTruck: Truck) => {
+      const live = liveTrucksMap[baseTruck.id];
+      const existing = currentTrucksMap.get(baseTruck.id);
+      return {
+        ...baseTruck,
+        // Live state takes precedence over static definition
+        status: live?.status || existing?.status || baseTruck.status,
+        statusNote: live?.statusNote !== undefined ? live.statusNote : existing?.statusNote !== undefined ? existing.statusNote : baseTruck.statusNote,
+        lastStatusChange: live?.lastStatusChange || existing?.lastStatusChange || baseTruck.lastStatusChange,
+        tripsToday: live?.tripsToday !== undefined ? live.tripsToday : existing?.tripsToday !== undefined ? existing.tripsToday : baseTruck.tripsToday,
+        tonnesToday: live?.tonnesToday !== undefined ? live.tonnesToday : existing?.tonnesToday !== undefined ? existing.tonnesToday : baseTruck.tonnesToday,
+        assignedDriver: live?.assignedDriver || existing?.assignedDriver || baseTruck.assignedDriver,
+      };
+    });
+
+    localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(mergedTrucks));
+    broadcastDataChange('TRUCKS_UPDATED', mergedTrucks);
+    syncedItems.push('trucks');
+
+    // 2. Cumulative merge for haulage trips across all 60 dumpers
+    if (cloudTrips && Array.isArray(cloudTrips) && cloudTrips.length > 0) {
+      const localTrips = getStoredTrips();
+      const tripsMap = new Map<string, TripLog>();
+      localTrips.forEach(t => tripsMap.set(t.id, t));
+      cloudTrips.forEach(t => tripsMap.set(t.id, t));
+      const mergedTrips = Array.from(tripsMap.values()).sort(
+        (a, b) => new Date(b.dumpTime).getTime() - new Date(a.dumpTime).getTime()
+      );
+      localStorage.setItem(STORAGE_KEYS.TRIPS, JSON.stringify(mergedTrips));
+      broadcastDataChange('TRIPS_UPDATED', mergedTrips);
+      syncedItems.push('trips');
     }
+
     if (excavators && Array.isArray(excavators) && excavators.length > 0) {
       localStorage.setItem(STORAGE_KEYS.EXCAVATORS, JSON.stringify(excavators));
       broadcastDataChange('EXCAVATORS_UPDATED', excavators);
@@ -1848,13 +1959,32 @@ export async function pullCloudMasterData(): Promise<{ success: boolean; syncedI
   }
 }
 
-// Global Master Data & Equipment Alerts Listeners across all tablets in the mine
+// Global Master Data & Realtime Listeners across all tablets in the mine
 if (typeof window !== 'undefined') {
+  // 1. Master data updates from admin
   subscribeToMasterData((docId, data) => {
     try {
       if (docId === 'trucks' && Array.isArray(data) && data.length > 0) {
-        localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(data));
-        broadcastDataChange('TRUCKS_UPDATED', data);
+        // Smart merge preserving active operational status
+        const current = getStoredTrucks();
+        const currentMap = new Map<string, Truck>();
+        current.forEach(t => currentMap.set(t.id, t));
+
+        const merged = data.map((masterTruck: Truck) => {
+          const existing = currentMap.get(masterTruck.id);
+          if (!existing) return masterTruck;
+          return {
+            ...masterTruck,
+            status: existing.status || masterTruck.status,
+            statusNote: existing.statusNote !== undefined ? existing.statusNote : masterTruck.statusNote,
+            lastStatusChange: existing.lastStatusChange || masterTruck.lastStatusChange,
+            tripsToday: Math.max(existing.tripsToday || 0, masterTruck.tripsToday || 0),
+            tonnesToday: Math.max(existing.tonnesToday || 0, masterTruck.tonnesToday || 0),
+            assignedDriver: existing.assignedDriver || masterTruck.assignedDriver,
+          };
+        });
+        localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(merged));
+        broadcastDataChange('TRUCKS_UPDATED', merged);
       } else if (docId === 'excavators' && Array.isArray(data) && data.length > 0) {
         localStorage.setItem(STORAGE_KEYS.EXCAVATORS, JSON.stringify(data));
         broadcastDataChange('EXCAVATORS_UPDATED', data);
@@ -1876,7 +2006,58 @@ if (typeof window !== 'undefined') {
     }
   });
 
-  // Real-time equipment status and breakdown alerts sync across all devices
+  // 2. Real-time individual truck live state listener (/fleet_trucks/{truckId})
+  // When ANY truck sends an update, only that truck is updated; all other 59 trucks remain active and untouched!
+  subscribeToFleetTrucks((trucksMap) => {
+    try {
+      const current = getStoredTrucks();
+      let modified = false;
+      const updated = current.map(t => {
+        const live = trucksMap[t.id];
+        if (live) {
+          modified = true;
+          return {
+            ...t,
+            status: live.status || t.status,
+            statusNote: live.statusNote !== undefined ? live.statusNote : t.statusNote,
+            lastStatusChange: live.lastStatusChange || t.lastStatusChange,
+            tripsToday: live.tripsToday !== undefined ? live.tripsToday : t.tripsToday,
+            tonnesToday: live.tonnesToday !== undefined ? live.tonnesToday : t.tonnesToday,
+            assignedDriver: live.assignedDriver || t.assignedDriver,
+          };
+        }
+        return t;
+      });
+      if (modified) {
+        localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(updated));
+        broadcastDataChange('TRUCKS_UPDATED', updated);
+      }
+    } catch (e) {
+      console.warn('Error applying live truck state update:', e);
+    }
+  });
+
+  // 3. Real-time distinct haulage trips listener (/fleet_trips/{tripId})
+  // Accumulates distinct trips from all 60 dumpers without any concurrency collision!
+  subscribeToCloudFleetTrips((cloudTrips) => {
+    try {
+      if (cloudTrips && cloudTrips.length > 0) {
+        const current = getStoredTrips();
+        const tripsMap = new Map<string, TripLog>();
+        current.forEach(t => tripsMap.set(t.id, t));
+        cloudTrips.forEach(t => tripsMap.set(t.id, t));
+        const merged = Array.from(tripsMap.values()).sort(
+          (a, b) => new Date(b.dumpTime).getTime() - new Date(a.dumpTime).getTime()
+        );
+        localStorage.setItem(STORAGE_KEYS.TRIPS, JSON.stringify(merged));
+        broadcastDataChange('TRIPS_UPDATED', merged);
+      }
+    } catch (e) {
+      console.warn('Error applying cloud fleet trips update:', e);
+    }
+  });
+
+  // 4. Real-time equipment status and breakdown alerts sync across all devices
   subscribeToCloudEquipmentAlerts((alerts) => {
     try {
       if (alerts && Array.isArray(alerts) && alerts.length > 0) {
