@@ -1,0 +1,6 @@
+{
+  "name": "نظام الدسباتش - منجم السكري | Sukari Dispatch System",
+  "description": "نظام إدارة أسطول النقل والتحميل الميداني لمنجم السكري لمراقبة الشاحنات والحفارات والمزامنة الساعية للحمولات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,69 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    // Connection test document
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Real-time Dispatcher & Broadcast Messages
+    match /dispatcher_messages/{messageId} {
+      allow read: if true;
+      allow create: if isValidId(messageId)
+        && request.resource.data.messageText is string
+        && request.resource.data.messageText.size() <= 1500
+        && request.resource.data.targetTruckId is string
+        && request.resource.data.priority in ['NORMAL', 'URGENT', 'CRITICAL'];
+      allow update: if isValidId(messageId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledged', 'acknowledgedAt', 'acknowledgedBy']);
+      allow delete: if true;
+    }
+
+    // Single active device session per equipment to prevent two devices opening same account
+    match /equipment_sessions/{equipmentId} {
+      allow read: if true;
+      allow write: if isValidId(equipmentId)
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.size() <= 128;
+    }
+
+    // Presence heartbeat and online/offline tracking
+    match /equipment_presence/{equipmentId} {
+      allow read: if true;
+      allow write: if isValidId(equipmentId)
+        && request.resource.data.lastSeen is string;
+    }
+
+    // Shift handover management logs
+    match /shift_logs/{shiftId} {
+      allow read: if true;
+      allow create, update: if isValidId(shiftId)
+        && request.resource.data.equipmentId is string;
+      allow delete: if false;
+    }
+
+    // Cloud synchronized haulage trips
+    match /cloud_trips/{tripId} {
+      allow read: if true;
+      allow create, update: if isValidId(tripId)
+        && request.resource.data.truckId is string;
+      allow delete: if true;
+    }
+
+    // Admin Master Data (Trucks, Excavators, Dumps, Drivers, Standby reasons synced across all tablets)
+    match /admin_master_data/{docId} {
+      allow read: if true;
+      allow write: if isValidId(docId);
+    }
+
+    // Default deny for everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

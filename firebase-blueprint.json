@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "DispatcherMessage": {
+      "title": "DispatcherMessage",
+      "description": "Real-time communication message sent by dispatcher or admin to all equipment or specific tablets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "targetTruckId": { "type": "string" },
+        "messageText": { "type": "string", "maxLength": 1000 },
+        "priority": { "type": "string", "enum": ["NORMAL", "URGENT", "CRITICAL"] },
+        "sender": { "type": "string", "maxLength": 100 },
+        "timestamp": { "type": "string" },
+        "driverName": { "type": "string" },
+        "acknowledged": { "type": "boolean" },
+        "acknowledgedAt": { "type": "string" }
+      },
+      "required": ["id", "targetTruckId", "messageText", "priority", "sender", "timestamp"]
+    },
+    "EquipmentSession": {
+      "title": "EquipmentSession",
+      "description": "Active tablet hardware session preventing concurrent logins on two separate devices",
+      "type": "object",
+      "properties": {
+        "equipmentId": { "type": "string" },
+        "equipmentType": { "type": "string", "enum": ["TRUCK", "EXCAVATOR"] },
+        "deviceId": { "type": "string" },
+        "driverCode": { "type": "string" },
+        "driverName": { "type": "string" },
+        "loginTime": { "type": "string" },
+        "lastHeartbeat": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "DISCONNECTED", "TRANSFERRED"] },
+        "deviceInfo": { "type": "string" }
+      },
+      "required": ["equipmentId", "deviceId", "loginTime", "lastHeartbeat", "status"]
+    },
+    "EquipmentPresence": {
+      "title": "EquipmentPresence",
+      "description": "Heartbeat and online/offline presence for mining trucks and excavators",
+      "type": "object",
+      "properties": {
+        "equipmentId": { "type": "string" },
+        "lastSeen": { "type": "string" },
+        "status": { "type": "string" },
+        "isOnline": { "type": "boolean" },
+        "currentOperator": { "type": "string" }
+      },
+      "required": ["equipmentId", "lastSeen"]
+    },
+    "ShiftLog": {
+      "title": "ShiftLog",
+      "description": "Driver and equipment operator shift handover and shift lifecycle log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "equipmentId": { "type": "string" },
+        "equipmentType": { "type": "string", "enum": ["TRUCK", "EXCAVATOR"] },
+        "driverCode": { "type": "string" },
+        "driverName": { "type": "string" },
+        "shiftType": { "type": "string", "enum": ["DAY", "NIGHT"] },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "HANDED_OVER", "COMPLETED"] },
+        "handoverToCode": { "type": "string" },
+        "handoverToName": { "type": "string" },
+        "engineHours": { "type": "number" },
+        "fuelLevel": { "type": "number" },
+        "safetyChecked": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "tripsCount": { "type": "number" },
+        "tonnesCount": { "type": "number" }
+      },
+      "required": ["id", "equipmentId", "driverCode", "driverName", "startTime", "status"]
+    },
+    "TripRecord": {
+      "title": "TripRecord",
+      "description": "Cloud-synchronized haulage trip record from field tablets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "truckId": { "type": "string" },
+        "driverCode": { "type": "string" },
+        "driverName": { "type": "string" },
+        "excavatorId": { "type": "string" },
+        "material": { "type": "string" },
+        "dumpLocationId": { "type": "string" },
+        "payloadTonnes": { "type": "number" },
+        "loadStartTime": { "type": "string" },
+        "dumpTime": { "type": "string" },
+        "cycleTimeMinutes": { "type": "number" },
+        "standbyDurationSec": { "type": "number" }
+      },
+      "required": ["id", "truckId", "driverCode", "excavatorId", "dumpLocationId", "dumpTime"]
+    }
+  },
+  "firestore": {
+    "/dispatcher_messages/{messageId}": {
+      "schema": "DispatcherMessage",
+      "description": "Real-time messages sent by admin or dispatcher"
+    },
+    "/equipment_sessions/{equipmentId}": {
+      "schema": "EquipmentSession",
+      "description": "Active session preventing multiple devices from using the same equipment account simultaneously"
+    },
+    "/equipment_presence/{equipmentId}": {
+      "schema": "EquipmentPresence",
+      "description": "Real-time presence and heartbeat for trucks and excavators"
+    },
+    "/shift_logs/{shiftId}": {
+      "schema": "ShiftLog",
+      "description": "Operator shift records and handovers"
+    },
+    "/cloud_trips/{tripId}": {
+      "schema": "TripRecord",
+      "description": "Mining haulage trips synced to cloud"
+    },
+    "/admin_master_data/{docId}": {
+      "schema": "TripRecord",
+      "description": "Admin and Dispatcher master data synchronized across all devices"
+    }
+  }
+}

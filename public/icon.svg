@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="96" fill="#0b0f17"/>
+  <rect x="16" y="16" width="480" height="480" rx="80" fill="none" stroke="#f59e0b" stroke-width="8" stroke-opacity="0.4"/>
+  <!-- Gold Mine Mountain Silhouettes -->
+  <path d="M60 400 L210 180 L290 280 L390 140 L452 400 Z" fill="#1e293b"/>
+  <path d="M120 400 L250 210 L340 330 L400 240 L452 400 Z" fill="#334155"/>
+  <!-- CAT Haul Truck Body -->
+  <g transform="translate(90, 190) scale(0.65)">
+    <!-- Dump Bed tilted -->
+    <path d="M40 180 L320 180 L360 80 L90 80 Z" fill="#f59e0b" stroke="#d97706" stroke-width="10"/>
+    <!-- Cab -->
+    <path d="M330 180 L420 180 L420 100 L350 100 Z" fill="#fbbf24" stroke="#d97706" stroke-width="8"/>
+    <rect x="360" y="110" width="45" height="40" rx="4" fill="#0f172a"/>
+    <!-- Chassis -->
+    <rect x="60" y="180" width="370" height="40" rx="6" fill="#1e293b"/>
+    <!-- Wheels -->
+    <circle cx="120" cy="240" r="55" fill="#020617" stroke="#475569" stroke-width="12"/>
+    <circle cx="120" cy="240" r="24" fill="#f59e0b"/>
+    <circle cx="370" cy="240" r="55" fill="#020617" stroke="#475569" stroke-width="12"/>
+    <circle cx="370" cy="240" r="24" fill="#f59e0b"/>
+  </g>
+  <!-- Text Sukari Gold Mine -->
+  <text x="256" y="445" font-family="system-ui, sans-serif" font-size="34" font-weight="900" fill="#f59e0b" text-anchor="middle" letter-spacing="2">SUKARI DISPATCH</text>
+  <text x="256" y="475" font-family="system-ui, sans-serif" font-size="20" font-weight="700" fill="#94a3b8" text-anchor="middle">منجم السكري لمناجم الذهب</text>
+</svg>
