@@ -61,6 +61,12 @@ service cloud.firestore {
       allow write: if isValidId(docId);
     }
 
+    // Equipment Breakdown & Status Alerts synced across all tablets
+    match /equipment_alerts/{alertId} {
+      allow read: if true;
+      allow write: if isValidId(alertId);
+    }
+
     // Default deny for everything else
     match /{document=**} {
       allow read, write: if false;

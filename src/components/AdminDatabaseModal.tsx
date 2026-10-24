@@ -91,6 +91,10 @@ import {
   initAuth,
   getCurrentGoogleUser,
   GoogleSheetsConfig,
+  DEFAULT_SPREADSHEET_ID,
+  DEFAULT_SPREADSHEET_URL,
+  DEFAULT_OFFICIAL_ACCOUNT_EMAIL,
+  DEFAULT_SHEETS_CONFIG,
 } from '../utils/googleSheets';
 
 interface Props {
@@ -2002,6 +2006,57 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
               {/* TAB 6: GOOGLE SHEETS INTEGRATION & EXPORT */}
               {activeTab === 'GOOGLE_SHEETS' && (
                 <div className="space-y-6">
+                  {/* Official Credentials Banner */}
+                  <div className="p-4 rounded-2xl bg-indigo-950/40 border-2 border-indigo-500/40 space-y-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-indigo-300 font-bold">
+                        <ShieldCheck className="w-5 h-5 text-indigo-400 shrink-0" />
+                        <span>الحساب الرسمي الثابت للدسباتش:</span>
+                        <code className="px-2 py-0.5 rounded-lg bg-indigo-900 text-indigo-200 font-mono font-bold">
+                          {DEFAULT_OFFICIAL_ACCOUNT_EMAIL}
+                        </code>
+                      </div>
+                      {!googleUserEmail ? (
+                        <button
+                          type="button"
+                          onClick={handleAdminGoogleSignIn}
+                          disabled={isGoogleSigningIn}
+                          className="py-1.5 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-950 font-black text-xs shadow-md transition-all cursor-pointer"
+                        >
+                          {isGoogleSigningIn ? 'جاري الاتصال...' : `تسجيل الدخول بـ ${DEFAULT_OFFICIAL_ACCOUNT_EMAIL}`}
+                        </button>
+                      ) : (
+                        <span className="text-emerald-400 font-bold flex items-center gap-1 font-mono">
+                          <CheckCircle2 className="w-4 h-4" />
+                          متصل: {googleUserEmail}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-indigo-900/60 text-slate-400">
+                      <div className="flex items-center gap-2">
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>جدول المزامنة الثابت لكافة الأجهزة:</span>
+                        <code className="text-[11px] font-mono text-emerald-300 truncate max-w-xs md:max-w-md">
+                          {DEFAULT_SPREADSHEET_ID}
+                        </code>
+                      </div>
+                      {sheetsConfig?.spreadsheetId !== DEFAULT_SPREADSHEET_ID && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            saveStoredSheetsConfig(DEFAULT_SHEETS_CONFIG);
+                            setSheetsConfig(DEFAULT_SHEETS_CONFIG);
+                            showStatus('تمت استعادة جدول منجم السكري الرسمي الثابت');
+                          }}
+                          className="text-xs text-amber-400 hover:text-amber-300 underline font-bold cursor-pointer"
+                        >
+                          استعادة الجدول الثابت
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Privacy & Restriction Warning */}
                   <div className="p-3.5 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-between gap-3 text-xs text-emerald-300">
                     <div className="flex items-center gap-2">

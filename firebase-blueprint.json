@@ -91,6 +91,25 @@
         "standbyDurationSec": { "type": "number" }
       },
       "required": ["id", "truckId", "driverCode", "excavatorId", "dumpLocationId", "dumpTime"]
+    },
+    "EquipmentAlert": {
+      "title": "EquipmentAlert",
+      "description": "Equipment breakdown and incident reports synchronized in real-time across all devices",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "equipmentId": { "type": "string" },
+        "equipmentType": { "type": "string", "enum": ["TRUCK", "LOADER"] },
+        "status": { "type": "string" },
+        "reasonAr": { "type": "string" },
+        "severity": { "type": "string", "enum": ["INFO", "WARNING", "CRITICAL"] },
+        "reportedAt": { "type": "string" },
+        "reportedBy": { "type": "string" },
+        "resolved": { "type": "boolean" },
+        "resolvedAt": { "type": "string" },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["id", "equipmentId", "equipmentType", "status", "reasonAr", "severity", "reportedAt", "reportedBy", "resolved"]
     }
   },
   "firestore": {
@@ -117,6 +136,10 @@
     "/admin_master_data/{docId}": {
       "schema": "TripRecord",
       "description": "Admin and Dispatcher master data synchronized across all devices"
+    },
+    "/equipment_alerts/{alertId}": {
+      "schema": "EquipmentAlert",
+      "description": "Breakdown and status alerts from field tablets and control room"
     }
   }
 }

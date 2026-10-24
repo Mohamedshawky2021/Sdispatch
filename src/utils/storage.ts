@@ -24,6 +24,9 @@ import {
   syncMasterDataToCloud,
   fetchMasterDataFromCloud,
   subscribeToMasterData,
+  syncEquipmentAlertToCloud,
+  subscribeToCloudEquipmentAlerts,
+  fetchCloudEquipmentAlerts,
 } from './firebaseSync';
 
 const STORAGE_KEYS = {
@@ -738,6 +741,9 @@ export function addEquipmentAlert(newAlert: EquipmentAlert) {
   const updated = [newAlert, ...current];
   saveEquipmentAlerts(updated);
 
+  // Sync alert to Cloud Firestore immediately
+  syncEquipmentAlertToCloud(newAlert).catch(console.error);
+
   // If this alert applies to a truck, update the truck status
   if (newAlert.equipmentType === 'TRUCK') {
     const trucks = getStoredTrucks();
@@ -765,13 +771,19 @@ export function addEquipmentAlert(newAlert: EquipmentAlert) {
 
 export function resolveEquipmentAlert(alertId: string) {
   const current = getStoredEquipmentAlerts();
+  let resolvedItem: EquipmentAlert | null = null;
   const updated = current.map(a => {
     if (a.id === alertId) {
-      return { ...a, resolved: true, resolvedAt: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) };
+      resolvedItem = { ...a, resolved: true, resolvedAt: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) };
+      return resolvedItem;
     }
     return a;
   });
   saveEquipmentAlerts(updated);
+
+  if (resolvedItem) {
+    syncEquipmentAlertToCloud(resolvedItem).catch(console.error);
+  }
 
   // Restore equipment status to ACTIVE
   const target = current.find(a => a.id === alertId);
@@ -1783,13 +1795,14 @@ export function detectProductionGaps(
 export async function pullCloudMasterData(): Promise<{ success: boolean; syncedItems: string[] }> {
   const syncedItems: string[] = [];
   try {
-    const [trucks, excavators, dumps, drivers, reasons, config] = await Promise.all([
+    const [trucks, excavators, dumps, drivers, reasons, config, alerts] = await Promise.all([
       fetchMasterDataFromCloud('trucks'),
       fetchMasterDataFromCloud('excavators'),
       fetchMasterDataFromCloud('dumps'),
       fetchMasterDataFromCloud('drivers'),
       fetchMasterDataFromCloud('custom_standby_reasons'),
       fetchMasterDataFromCloud('app_config'),
+      fetchCloudEquipmentAlerts(),
     ]);
 
     if (trucks && Array.isArray(trucks) && trucks.length > 0) {
@@ -1822,6 +1835,11 @@ export async function pullCloudMasterData(): Promise<{ success: boolean; syncedI
       broadcastDataChange('CONFIG_UPDATED', config);
       syncedItems.push('app_config');
     }
+    if (alerts && Array.isArray(alerts) && alerts.length > 0) {
+      localStorage.setItem(STORAGE_KEYS.EQUIPMENT_ALERTS, JSON.stringify(alerts));
+      broadcastDataChange('EQUIPMENT_ALERTS_UPDATED', alerts);
+      syncedItems.push('equipment_alerts');
+    }
 
     return { success: true, syncedItems };
   } catch (err) {
@@ -1830,7 +1848,7 @@ export async function pullCloudMasterData(): Promise<{ success: boolean; syncedI
   }
 }
 
-// Global Master Data Listener across all tablets in the mine
+// Global Master Data & Equipment Alerts Listeners across all tablets in the mine
 if (typeof window !== 'undefined') {
   subscribeToMasterData((docId, data) => {
     try {
@@ -1855,6 +1873,18 @@ if (typeof window !== 'undefined') {
       }
     } catch (e) {
       console.warn('Error applying cloud master data update in background:', e);
+    }
+  });
+
+  // Real-time equipment status and breakdown alerts sync across all devices
+  subscribeToCloudEquipmentAlerts((alerts) => {
+    try {
+      if (alerts && Array.isArray(alerts) && alerts.length > 0) {
+        localStorage.setItem(STORAGE_KEYS.EQUIPMENT_ALERTS, JSON.stringify(alerts));
+        broadcastDataChange('EQUIPMENT_ALERTS_UPDATED', alerts);
+      }
+    } catch (e) {
+      console.warn('Error applying equipment alerts update:', e);
     }
   });
 }

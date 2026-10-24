@@ -37,6 +37,17 @@ const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 
+// Permanent Constant Defaults for all devices in the mine
+export const DEFAULT_SPREADSHEET_ID = '13OBFMBXBC515M7-qbHJmQaiMDsqxUBZ9f546U5YOkj4';
+export const DEFAULT_SPREADSHEET_URL =
+  'https://docs.google.com/spreadsheets/d/13OBFMBXBC515M7-qbHJmQaiMDsqxUBZ9f546U5YOkj4/edit?usp=drivesdk';
+export const DEFAULT_OFFICIAL_ACCOUNT_EMAIL = 'sukaridispatch@gmail.com';
+
+provider.setCustomParameters({
+  login_hint: DEFAULT_OFFICIAL_ACCOUNT_EMAIL,
+  prompt: 'select_account',
+});
+
 // LocalStorage keys for persistent sign-in across reloads, restarts and app closes
 const ACCESS_TOKEN_KEY = 'SUKARI_GOOGLE_ACCESS_TOKEN_V1';
 const USER_CACHE_KEY = 'SUKARI_GOOGLE_USER_CACHE_V1';
@@ -65,21 +76,35 @@ export interface GoogleSheetsConfig {
   autoSyncEnabled?: boolean;
 }
 
-export function getStoredSheetsConfig(): GoogleSheetsConfig | null {
-  if (typeof window === 'undefined') return null;
+export const DEFAULT_SHEETS_CONFIG: GoogleSheetsConfig = {
+  spreadsheetId: DEFAULT_SPREADSHEET_ID,
+  spreadsheetUrl: DEFAULT_SPREADSHEET_URL,
+  spreadsheetTitle: 'منجم السكري — سجلات الدسباتش المعتمدة (13OBFMBX...)',
+  autoSyncEnabled: true,
+};
+
+export function getStoredSheetsConfig(): GoogleSheetsConfig {
+  if (typeof window === 'undefined') return DEFAULT_SHEETS_CONFIG;
   const raw = localStorage.getItem(SHEETS_CONFIG_KEY);
-  if (!raw) return null;
+  if (!raw) {
+    localStorage.setItem(SHEETS_CONFIG_KEY, JSON.stringify(DEFAULT_SHEETS_CONFIG));
+    return DEFAULT_SHEETS_CONFIG;
+  }
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.spreadsheetId) {
+      return DEFAULT_SHEETS_CONFIG;
+    }
+    return parsed;
   } catch {
-    return null;
+    return DEFAULT_SHEETS_CONFIG;
   }
 }
 
 export function saveStoredSheetsConfig(config: GoogleSheetsConfig | null) {
   if (typeof window === 'undefined') return;
   if (!config) {
-    localStorage.removeItem(SHEETS_CONFIG_KEY);
+    localStorage.setItem(SHEETS_CONFIG_KEY, JSON.stringify(DEFAULT_SHEETS_CONFIG));
   } else {
     localStorage.setItem(SHEETS_CONFIG_KEY, JSON.stringify(config));
   }

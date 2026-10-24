@@ -17,7 +17,7 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { DispatcherDirectMessage } from '../types/dispatch';
+import { DispatcherDirectMessage, EquipmentAlert } from '../types/dispatch';
 
 // Ensure Firebase is initialized
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -123,22 +123,26 @@ export async function sendCloudDispatcherMessage(
     priority,
     sender,
     timestamp: new Date().toISOString(),
-    targetDriverName: driverName,
+    targetDriverName: driverName || '',
     acknowledged: false,
   };
 
   const path = `dispatcher_messages/${messageId}`;
   try {
-    await setDoc(doc(db, 'dispatcher_messages', messageId), newMsg);
+    // Sanitize object to remove any undefined fields that cause Firestore errors
+    const cleanDoc = Object.fromEntries(
+      Object.entries(newMsg).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'dispatcher_messages', messageId), cleanDoc);
   } catch (err) {
     handleFirestoreError(err, OperationType.CREATE, path);
   }
 
   // Also cache locally in localStorage
   try {
-    const raw = localStorage.getItem('SUKARI_DISPATCHER_MESSAGES_V1') || '[]';
+    const raw = localStorage.getItem('sukari_direct_messages_v2') || '[]';
     const local = JSON.parse(raw);
-    localStorage.setItem('SUKARI_DISPATCHER_MESSAGES_V1', JSON.stringify([newMsg, ...local]));
+    localStorage.setItem('sukari_direct_messages_v2', JSON.stringify([newMsg, ...local.filter((m: any) => m.id !== messageId)]));
   } catch {}
 
   return newMsg;
@@ -195,27 +199,45 @@ export function listenForUnitMessages(
 ): Unsubscribe {
   const path = 'dispatcher_messages';
   try {
-    const q = query(collection(db, path), orderBy('timestamp', 'desc'), limit(30));
-    const processedIds = new Set<string>();
+    const q = query(collection(db, path), orderBy('timestamp', 'desc'), limit(50));
+    const notifiedMessageIds = new Set<string>();
+
     return onSnapshot(
       q,
       (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'added' || change.type === 'modified') {
-            const data = change.doc.data() as DispatcherDirectMessage;
-            if (
-              !data.acknowledged &&
-              (data.targetTruckId === unitId ||
-                data.targetTruckId === 'ALL' ||
-                data.targetTruckId === 'TRUCKS_ALL')
-            ) {
-              if (!processedIds.has(data.id)) {
-                processedIds.add(data.id);
-                onNewMessage(data.messageText, data);
-              }
-            }
-          }
+        const cloudMessages: DispatcherDirectMessage[] = [];
+        snapshot.forEach((d) => {
+          cloudMessages.push(d.data() as DispatcherDirectMessage);
         });
+
+        // Sync directly into local storage on this tablet
+        if (typeof window !== 'undefined' && cloudMessages.length > 0) {
+          try {
+            const raw = localStorage.getItem('sukari_direct_messages_v2') || '[]';
+            const local = JSON.parse(raw) as DispatcherDirectMessage[];
+            const map = new Map<string, DispatcherDirectMessage>();
+            local.forEach((m) => map.set(m.id, m));
+            cloudMessages.forEach((m) => map.set(m.id, m));
+            const merged = Array.from(map.values()).sort(
+              (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            );
+            localStorage.setItem('sukari_direct_messages_v2', JSON.stringify(merged));
+          } catch {}
+        }
+
+        // Find any unacknowledged message targeted to this specific truck or to ALL
+        const targetMsg = cloudMessages.find(
+          (m) =>
+            !m.acknowledged &&
+            (m.targetTruckId === unitId ||
+              m.targetTruckId === 'ALL' ||
+              m.targetTruckId === 'TRUCKS_ALL')
+        );
+
+        if (targetMsg && !notifiedMessageIds.has(targetMsg.id)) {
+          notifiedMessageIds.add(targetMsg.id);
+          onNewMessage(targetMsg.messageText, targetMsg);
+        }
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, path);
@@ -224,6 +246,69 @@ export function listenForUnitMessages(
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, path);
     return () => {};
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4bb. Real-Time Equipment Status & Breakdown Alerts across all tablets
+// ----------------------------------------------------------------------
+export async function syncEquipmentAlertToCloud(alert: EquipmentAlert): Promise<void> {
+  const path = `equipment_alerts/${alert.id}`;
+  try {
+    const cleanAlert = Object.fromEntries(
+      Object.entries(alert).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'equipment_alerts', alert.id), cleanAlert);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteEquipmentAlertFromCloud(alertId: string): Promise<void> {
+  const path = `equipment_alerts/${alertId}`;
+  try {
+    await deleteDoc(doc(db, 'equipment_alerts', alertId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+export function subscribeToCloudEquipmentAlerts(
+  callback: (alerts: EquipmentAlert[]) => void
+): Unsubscribe {
+  const path = 'equipment_alerts';
+  try {
+    return onSnapshot(
+      collection(db, path),
+      (snapshot) => {
+        const list: EquipmentAlert[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as EquipmentAlert);
+        });
+        callback(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+export async function fetchCloudEquipmentAlerts(): Promise<EquipmentAlert[]> {
+  const path = 'equipment_alerts';
+  try {
+    const snap = await getDocs(collection(db, path));
+    const list: EquipmentAlert[] = [];
+    snap.forEach((d) => {
+      list.push(d.data() as EquipmentAlert);
+    });
+    return list;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return [];
   }
 }
 

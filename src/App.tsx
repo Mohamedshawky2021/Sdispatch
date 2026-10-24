@@ -34,12 +34,14 @@ import {
   OFFICIAL_SUKARI_WHATSAPP_GROUP,
   getAssignedTabletTruck,
   pullCloudMasterData,
+  saveDispatcherMessages,
 } from './utils/storage';
 import {
   getTimeUntilNextHour,
   checkAndTriggerHourlyExport,
 } from './utils/hourlySyncEngine';
 import { triggerBackgroundSheetsSync } from './utils/googleSheets';
+import { subscribeToCloudDispatcherMessages } from './utils/firebaseSync';
 import { playDispatchAlertSound } from './utils/audio';
 
 export default function App() {
@@ -140,6 +142,19 @@ export default function App() {
       unsubscribe();
     };
   }, [reloadData]);
+
+  // Cloud Realtime Dispatcher Messages Sync for ALL devices & tablets
+  useEffect(() => {
+    const unsubCloudMessages = subscribeToCloudDispatcherMessages((cloudMsgs) => {
+      if (cloudMsgs && cloudMsgs.length > 0) {
+        saveDispatcherMessages(cloudMsgs);
+      }
+    });
+
+    return () => {
+      unsubCloudMessages();
+    };
+  }, []);
 
   // Hourly Timer and Auto-Export Check Engine
   useEffect(() => {
