@@ -17,7 +17,14 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { DispatcherDirectMessage, EquipmentAlert, Truck, TripLog } from '../types/dispatch';
+import {
+  DispatcherDirectMessage,
+  EquipmentAlert,
+  Truck,
+  TripLog,
+  FuelingLog,
+  DriverSessionRecord,
+} from '../types/dispatch';
 
 // Ensure Firebase is initialized
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -442,6 +449,352 @@ export async function fetchCloudFleetTrips(limitCount: number = 300): Promise<Tr
     const list: TripLog[] = [];
     snap.forEach((d) => {
       list.push(d.data() as TripLog);
+    });
+    return list;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return [];
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4c-3. High-Priority Emergency SOS System (نظام الاستغاثة والطوارئ)
+// ----------------------------------------------------------------------
+export interface EmergencySosAlert {
+  id: string; // SOS_{truckId}_{timestamp}
+  truckId: string;
+  driverCode: string;
+  driverName: string;
+  timestamp: string;
+  message: string;
+  severity: 'CRITICAL';
+  acknowledged: boolean;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  status: 'ACTIVE' | 'RESOLVED' | 'CANCELLED';
+}
+
+export async function sendEmergencySos(
+  truckId: string,
+  driverCode: string,
+  driverName: string,
+  message: string = 'نداء طوارئ واستغاثة عاجل (SOS) من كابينة الشاحنة'
+): Promise<EmergencySosAlert> {
+  const alertId = `SOS_${truckId}_${Date.now()}`;
+  const nowIso = new Date().toISOString();
+  const alert: EmergencySosAlert = {
+    id: alertId,
+    truckId,
+    driverCode,
+    driverName,
+    timestamp: nowIso,
+    message,
+    severity: 'CRITICAL',
+    acknowledged: false,
+    status: 'ACTIVE',
+  };
+
+  const path = `fleet_emergency_alerts/${alertId}`;
+  try {
+    const cleanDoc = Object.fromEntries(
+      Object.entries(alert).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'fleet_emergency_alerts', alertId), cleanDoc);
+
+    // Also update truck status directly in fleet_trucks so the control room and map mark it immediately
+    await syncTruckLiveStateToCloud(truckId, {
+      status: 'BREAKDOWN',
+      statusNote: `🚨 نداء استغاثة SOS نشط (${driverName})`,
+      lastStatusChange: nowIso,
+    });
+
+    // Also trigger high-priority dispatcher message
+    await sendCloudDispatcherMessage(
+      'ALL',
+      `🚨 إشارة طوارئ واستغاثة (SOS) نشطة من الدنبر [${truckId}] - السائق: ${driverName}`,
+      'CRITICAL',
+      `السائق ${driverName} (${truckId})`
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+
+  return alert;
+}
+
+export async function acknowledgeEmergencySos(
+  alertId: string,
+  acknowledgedBy: string = 'غرفة الدسباتش (Dispatcher)'
+): Promise<void> {
+  const path = `fleet_emergency_alerts/${alertId}`;
+  try {
+    await setDoc(
+      doc(db, 'fleet_emergency_alerts', alertId),
+      {
+        acknowledged: true,
+        acknowledgedAt: new Date().toISOString(),
+        acknowledgedBy,
+        status: 'RESOLVED',
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export async function cancelEmergencySos(alertId: string, truckId?: string): Promise<void> {
+  const path = `fleet_emergency_alerts/${alertId}`;
+  try {
+    await setDoc(
+      doc(db, 'fleet_emergency_alerts', alertId),
+      {
+        acknowledged: true,
+        acknowledgedAt: new Date().toISOString(),
+        status: 'CANCELLED',
+      },
+      { merge: true }
+    );
+
+    if (truckId) {
+      await syncTruckLiveStateToCloud(truckId, {
+        status: 'ACTIVE',
+        statusNote: 'تم إلغاء نداء الطوارئ واستئناف العمل 🟢',
+        lastStatusChange: new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export function subscribeToEmergencySos(
+  callback: (alerts: EmergencySosAlert[]) => void
+): Unsubscribe {
+  const path = 'fleet_emergency_alerts';
+  try {
+    const q = query(collection(db, path), orderBy('timestamp', 'desc'), limit(30));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: EmergencySosAlert[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as EmergencySosAlert);
+        });
+        callback(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+export function subscribeToTruckActiveSos(
+  truckId: string,
+  callback: (alert: EmergencySosAlert | null) => void
+): Unsubscribe {
+  const path = 'fleet_emergency_alerts';
+  try {
+    const q = query(
+      collection(db, path),
+      where('truckId', '==', truckId),
+      orderBy('timestamp', 'desc'),
+      limit(5)
+    );
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: EmergencySosAlert[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as EmergencySosAlert);
+        });
+        // Find latest active or recently acknowledged alert
+        const active = list.find((a) => a.status === 'ACTIVE' || (!a.acknowledged && a.status !== 'CANCELLED')) || list[0] || null;
+        callback(active);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4c-4. Distinct Fueling Cloud Sync (/fleet_fuelings/{fuelingId})
+// ----------------------------------------------------------------------
+export async function syncFuelingToCloud(fueling: FuelingLog): Promise<void> {
+  if (!fueling || !fueling.id) return;
+  const path = `fleet_fuelings/${fueling.id}`;
+  try {
+    const cleanDoc = Object.fromEntries(
+      Object.entries({
+        ...fueling,
+        cloudSyncedAt: new Date().toISOString(),
+      }).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'fleet_fuelings', fueling.id), cleanDoc, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeToCloudFuelings(
+  callback: (fuelings: FuelingLog[]) => void
+): Unsubscribe {
+  const path = 'fleet_fuelings';
+  try {
+    const q = query(collection(db, path), orderBy('startTime', 'desc'), limit(100));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: FuelingLog[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as FuelingLog);
+        });
+        callback(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+export async function fetchCloudFuelings(): Promise<FuelingLog[]> {
+  const path = 'fleet_fuelings';
+  try {
+    const q = query(collection(db, path), orderBy('startTime', 'desc'), limit(100));
+    const snap = await getDocs(q);
+    const list: FuelingLog[] = [];
+    snap.forEach((d) => {
+      list.push(d.data() as FuelingLog);
+    });
+    return list;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return [];
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4c-5. Distinct Standby & Delay Events Cloud Sync (/fleet_standbys/{standbyId})
+// ----------------------------------------------------------------------
+export interface StandbyCloudEvent {
+  id: string; // STDBY_{truckId}_{timestamp}
+  truckId: string;
+  driverCode: string;
+  driverName: string;
+  reason: string;
+  reasonLabelAr: string;
+  startTime: string;
+  endTime?: string;
+  durationSeconds?: number;
+  status: 'ACTIVE' | 'COMPLETED';
+}
+
+export async function syncStandbyToCloud(event: StandbyCloudEvent): Promise<void> {
+  if (!event || !event.id) return;
+  const path = `fleet_standbys/${event.id}`;
+  try {
+    const cleanDoc = Object.fromEntries(
+      Object.entries({
+        ...event,
+        cloudSyncedAt: new Date().toISOString(),
+      }).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'fleet_standbys', event.id), cleanDoc, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeToCloudStandbys(
+  callback: (events: StandbyCloudEvent[]) => void
+): Unsubscribe {
+  const path = 'fleet_standbys';
+  try {
+    const q = query(collection(db, path), orderBy('startTime', 'desc'), limit(100));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: StandbyCloudEvent[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as StandbyCloudEvent);
+        });
+        callback(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+// ----------------------------------------------------------------------
+// 4c-6. Distinct Driver Attendance Sessions Cloud Sync (/fleet_driver_sessions/{sessionId})
+// ----------------------------------------------------------------------
+export async function syncDriverSessionToCloud(session: DriverSessionRecord): Promise<void> {
+  if (!session || !session.id) return;
+  const path = `fleet_driver_sessions/${session.id}`;
+  try {
+    const cleanDoc = Object.fromEntries(
+      Object.entries({
+        ...session,
+        cloudSyncedAt: new Date().toISOString(),
+      }).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'fleet_driver_sessions', session.id), cleanDoc, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeToCloudDriverSessions(
+  callback: (sessions: DriverSessionRecord[]) => void
+): Unsubscribe {
+  const path = 'fleet_driver_sessions';
+  try {
+    const q = query(collection(db, path), orderBy('loginTime', 'desc'), limit(100));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: DriverSessionRecord[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as DriverSessionRecord);
+        });
+        callback(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
+}
+
+export async function fetchCloudDriverSessions(): Promise<DriverSessionRecord[]> {
+  const path = 'fleet_driver_sessions';
+  try {
+    const q = query(collection(db, path), orderBy('loginTime', 'desc'), limit(100));
+    const snap = await getDocs(q);
+    const list: DriverSessionRecord[] = [];
+    snap.forEach((d) => {
+      list.push(d.data() as DriverSessionRecord);
     });
     return list;
   } catch (err) {

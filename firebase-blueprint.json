@@ -152,6 +152,22 @@
     "/equipment_alerts/{alertId}": {
       "schema": "EquipmentAlert",
       "description": "Breakdown and status alerts from field tablets and control room"
+    },
+    "/fleet_emergency_alerts/{alertId}": {
+      "schema": "EquipmentAlert",
+      "description": "High-priority emergency SOS alerts from driver in-cab tablets"
+    },
+    "/fleet_fuelings/{fuelingId}": {
+      "schema": "EquipmentPresence",
+      "description": "Distinct per-truck 4-stage fueling events"
+    },
+    "/fleet_standbys/{standbyId}": {
+      "schema": "EquipmentPresence",
+      "description": "Distinct per-truck standby and delay duration events"
+    },
+    "/fleet_driver_sessions/{sessionId}": {
+      "schema": "EquipmentSession",
+      "description": "Driver attendance and cab login/logout sessions"
     }
   }
 }

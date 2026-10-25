@@ -192,3 +192,61 @@ export function playLowBatteryAlarmSound() {
     // Silent fallback
   }
 }
+
+// -------------------------------------------------------------
+// Continuous High-Priority SOS Emergency Alarm Siren
+// Loops continuously until acknowledged by Dispatcher or Admin
+// -------------------------------------------------------------
+let sosAlarmInterval: ReturnType<typeof setInterval> | null = null;
+let isSosAlarmActiveFlag = false;
+
+export function startContinuousSosAlarm(): void {
+  if (typeof window === 'undefined') return;
+  if (isSosAlarmActiveFlag && sosAlarmInterval) return;
+
+  isSosAlarmActiveFlag = true;
+
+  const playSirenBurst = () => {
+    try {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      // Two-tone high-low urgent industrial emergency warble (980Hz and 650Hz)
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(980, now);
+      osc.frequency.linearRampToValueAtTime(650, now + 0.25);
+      osc.frequency.linearRampToValueAtTime(980, now + 0.5);
+
+      gain.gain.setValueAtTime(0.35, now);
+      gain.gain.exponentialRampToValueAtTime(0.02, now + 0.55);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.58);
+    } catch {
+      // Audio autoplay restriction fallback
+    }
+  };
+
+  playSirenBurst();
+  sosAlarmInterval = setInterval(playSirenBurst, 650);
+}
+
+export function stopContinuousSosAlarm(): void {
+  isSosAlarmActiveFlag = false;
+  if (sosAlarmInterval) {
+    clearInterval(sosAlarmInterval);
+    sosAlarmInterval = null;
+  }
+}
+
+export function isSosAlarmActive(): boolean {
+  return isSosAlarmActiveFlag;
+}
+

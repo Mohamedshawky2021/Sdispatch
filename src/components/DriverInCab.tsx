@@ -45,6 +45,9 @@ import {
   playDumpCompletedSound,
   playStandbyToggleSound,
   playDispatchAlertSound,
+  startContinuousSosAlarm,
+  stopContinuousSosAlarm,
+  isSosAlarmActive,
 } from '../utils/audio';
 import {
   addTrip,
@@ -69,6 +72,8 @@ import {
   recordDriverLoginSession,
   recordDriverLogoutSession,
   getCustomStandbyReasons,
+  recordStandbyStart,
+  recordStandbyEnd,
 } from '../utils/storage';
 import { useBatteryStatus } from '../hooks/useBatteryStatus';
 import { triggerBackgroundSheetsSync } from '../utils/googleSheets';
@@ -82,6 +87,10 @@ import {
   acknowledgeCloudMessage,
   listenForUnitMessages,
   CloudEquipmentSession,
+  sendEmergencySos,
+  cancelEmergencySos,
+  subscribeToTruckActiveSos,
+  EmergencySosAlert,
 } from '../utils/firebaseSync';
 
 interface Props {
@@ -294,6 +303,14 @@ export const DriverInCab: React.FC<Props> = ({
   // Multi-device Session Conflict (detects if another tablet logged into this equipment)
   const [sessionConflict, setSessionConflict] = useState<CloudEquipmentSession | null>(null);
 
+  // Emergency SOS Beacon & Continuous Alarm State
+  const [activeSosAlert, setActiveSosAlert] = useState<EmergencySosAlert | null>(null);
+  const [isSendingSos, setIsSendingSos] = useState<boolean>(false);
+  const [showSosConfirmModal, setShowSosConfirmModal] = useState<boolean>(false);
+
+  // Distinct Standby Cloud Event Tracking ID
+  const [currentStandbyId, setCurrentStandbyId] = useState<string | null>(null);
+
   const showAlert = (text: string, type: 'SUCCESS' | 'WARNING' | 'INFO' = 'SUCCESS') => {
     setAlertMessage({ text, type });
     setTimeout(() => setAlertMessage(null), 4000);
@@ -466,6 +483,76 @@ export const DriverInCab: React.FC<Props> = ({
   }, [currentTruck?.id, currentDriver?.code]);
 
   // -------------------------------------------------------------
+  // EMERGENCY SOS REALTIME SUBSCRIBER & CONTINUOUS ALARM LOOP
+  // -------------------------------------------------------------
+  useEffect(() => {
+    if (!currentTruck) {
+      stopContinuousSosAlarm();
+      setActiveSosAlert(null);
+      return;
+    }
+
+    const unsubSos = subscribeToTruckActiveSos(currentTruck.id, (alert) => {
+      if (alert && alert.status === 'ACTIVE' && !alert.acknowledged) {
+        setActiveSosAlert(alert);
+        startContinuousSosAlarm();
+      } else if (alert && alert.acknowledged) {
+        // Dispatcher / Admin acknowledged receipt in Control Room!
+        setActiveSosAlert(alert);
+        stopContinuousSosAlarm();
+      } else {
+        stopContinuousSosAlarm();
+        setActiveSosAlert(null);
+      }
+    });
+
+    return () => {
+      unsubSos();
+      stopContinuousSosAlarm();
+    };
+  }, [currentTruck?.id]);
+
+  const handleTriggerSosEmergency = async () => {
+    if (!currentTruck || !currentDriver) {
+      showAlert('يرجى تسجيل الدخول أولاً لتفعيل نداء الطوارئ', 'WARNING');
+      return;
+    }
+
+    setIsSendingSos(true);
+    setShowSosConfirmModal(false);
+
+    try {
+      startContinuousSosAlarm();
+      const alert = await sendEmergencySos(
+        currentTruck.id,
+        currentDriver.code,
+        currentDriver.name,
+        'نداء استغاثة وطوارئ عاجل (SOS) من كابينة الشاحنة'
+      );
+      setActiveSosAlert(alert);
+      showAlert('🚨 تم إرسال نداء الاستغاثة SOS فورياً إلى غرفة الدسباتش! سارينة الإنذار تعمل حتى تأكيد الاستلام', 'WARNING');
+    } catch (err: any) {
+      console.error('Failed to send SOS:', err);
+      showAlert('⚠️ تم تشغيل الإنذار - جاري إعادة محاولة إرسال الإشارة', 'WARNING');
+    } finally {
+      setIsSendingSos(false);
+    }
+  };
+
+  const handleCancelSosEmergency = async () => {
+    if (!activeSosAlert) return;
+    try {
+      await cancelEmergencySos(activeSosAlert.id, currentTruck?.id);
+      stopContinuousSosAlarm();
+      setActiveSosAlert(null);
+      showAlert('تم إلغاء نداء الاستغاثة وإيقاف السارينة بنجاح ✅', 'SUCCESS');
+    } catch {
+      stopContinuousSosAlarm();
+      setActiveSosAlert(null);
+    }
+  };
+
+  // -------------------------------------------------------------
   // 15-MINUTE AUTOMATIC GOOGLE SHEETS BACKGROUND SYNC
   // -------------------------------------------------------------
   useEffect(() => {
@@ -619,15 +706,24 @@ export const DriverInCab: React.FC<Props> = ({
     }
   };
 
-  // Standby Toggle
+  // Standby Toggle with Distinct Cloud Path Sync
   const toggleStandby = () => {
     if (!isStandby) {
       const now = new Date();
       setIsStandby(true);
       setStandbyStart(now);
+      if (currentTruck && currentDriver) {
+        const ev = recordStandbyStart(
+          currentTruck.id,
+          currentDriver.code,
+          currentDriver.name,
+          standbyReason
+        );
+        setCurrentStandbyId(ev.id);
+      }
       playStandbyToggleSound(true);
       setShowReasonPicker(true);
-      showAlert('تم بدء الاستاند باي وتسجيل وقت التوقف ⏱️', 'INFO');
+      showAlert('تم بدء الاستاند باي وتحديث مسار الحالة سحابياً ⏱️', 'INFO');
     } else {
       stopStandby();
     }
@@ -638,6 +734,10 @@ export const DriverInCab: React.FC<Props> = ({
       const now = new Date();
       const elapsed = Math.round((now.getTime() - standbyStart.getTime()) / 1000);
       setAccumulatedStandbySeconds(prev => prev + elapsed);
+      if (currentTruck) {
+        recordStandbyEnd(currentStandbyId, currentTruck.id, elapsed);
+        setCurrentStandbyId(null);
+      }
       setIsStandby(false);
       setStandbyStart(null);
       setStandbyElapsedSeconds(0);
@@ -1066,8 +1166,70 @@ export const DriverInCab: React.FC<Props> = ({
                 </div>
               </div>
             </button>
+
+            {/* In-Cab Emergency SOS Button */}
+            <button
+              type="button"
+              onClick={() => setShowSosConfirmModal(true)}
+              className={`py-1.5 px-3 rounded-xl border-2 font-black text-xs flex items-center gap-1.5 cursor-pointer shadow-lg transition-transform active:scale-95 ${
+                activeSosAlert
+                  ? 'bg-red-600 text-white border-white animate-pulse ring-2 ring-red-400'
+                  : 'bg-red-950/80 hover:bg-red-900 text-red-200 border-red-500/60'
+              }`}
+              title="زر استغاثة وطوارئ عاجل SOS وتشغيل سارينة الإنذار"
+            >
+              <span className="text-sm">🆘</span>
+              <span className="font-black">{activeSosAlert ? 'طوارئ نشطة 🚨' : 'طوارئ SOS'}</span>
+            </button>
           </div>
         </header>
+      )}
+
+      {/* Persistent Emergency SOS Active / Acknowledged Banner */}
+      {currentScreen !== 'LOGIN' && activeSosAlert && (
+        <div className={`mb-4 border-4 rounded-2xl p-4 shadow-2xl animate-in fade-in ${
+          activeSosAlert.acknowledged
+            ? 'bg-slate-900 border-emerald-500 text-slate-100'
+            : 'bg-gradient-to-r from-rose-950 via-red-900 to-rose-950 border-red-500 text-white animate-pulse'
+        }`}>
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl font-black shrink-0 ${
+                activeSosAlert.acknowledged ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-600 text-white animate-bounce'
+              }`}>
+                {activeSosAlert.acknowledged ? '✅' : '🆘'}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm md:text-base font-black">
+                    {activeSosAlert.acknowledged
+                      ? 'تم تأكيد استلام نداء الطوارئ من غرفة الدسباتش ✅'
+                      : '🚨 نداء طوارئ واستغاثة (SOS) نشط — سارينة الإنذار تعمل مستمرة!'}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-bold ${
+                    activeSosAlert.acknowledged ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white animate-ping'
+                  }`}>
+                    {activeSosAlert.acknowledged ? 'ACKNOWLEDGED' : 'ACTIVE SOS'}
+                  </span>
+                </div>
+                <p className="text-xs mt-1 text-slate-200">
+                  {activeSosAlert.acknowledged
+                    ? `تم تأكيد الاستلام بواسطة: ${activeSosAlert.acknowledgedBy || 'غرفة التحكم'} — تم إيقاف سارينة الإنذار. فرق الدعم في طريقها إليك.`
+                    : 'جاري تشغيل سارينة الإنذار المستمرة في الكابينة وإشعار غرفة التحكم المركزية حتى يتم تأكيد الاستلام من المراقب.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+              <button
+                type="button"
+                onClick={handleCancelSosEmergency}
+                className="py-2 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-slate-600 cursor-pointer shadow-md"
+              >
+                إلغاء نداء الاستغاثة والعودة للعمل 🟢
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Active Fueling 4-Stage Progressive Workflow Strip */}
@@ -1278,8 +1440,8 @@ export const DriverInCab: React.FC<Props> = ({
             </span>
           </div>
 
-          {/* STANDBY, FUELING & EQUIPMENT STATUS BAR */}
-          <div className="mb-4 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          {/* STANDBY, FUELING, STATUS & SOS BAR */}
+          <div className="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <button
               onClick={toggleStandby}
               className={`py-3 px-3 rounded-2xl font-black text-xs md:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg active:scale-98 ${
@@ -1326,15 +1488,30 @@ export const DriverInCab: React.FC<Props> = ({
 
             <button
               onClick={onOpenEquipmentAlerts}
-              className="py-3 px-3 rounded-2xl font-black text-xs md:text-sm flex items-center justify-center gap-2 bg-rose-950 hover:bg-rose-900 text-rose-100 border-2 border-rose-500/50 transition-all cursor-pointer shadow-lg active:scale-98"
+              className="py-3 px-3 rounded-2xl font-black text-xs md:text-sm flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border-2 border-slate-700 transition-all cursor-pointer shadow-lg active:scale-98"
             >
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>🚨 بلاغ عطل / حالة المعدة</span>
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>🚨 بلاغ عطل / حالة</span>
+            </button>
+
+            {/* Dedicated High-Impact SOS Emergency Button */}
+            <button
+              type="button"
+              onClick={() => setShowSosConfirmModal(true)}
+              className={`py-3 px-3 rounded-2xl font-black text-xs md:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xl active:scale-95 border-2 ${
+                activeSosAlert
+                  ? 'bg-red-600 text-white border-white animate-pulse ring-2 ring-red-400 shadow-red-900/80'
+                  : 'bg-gradient-to-r from-red-700 via-rose-600 to-red-800 hover:from-red-600 hover:to-rose-700 text-white border-red-500 shadow-red-950/60'
+              }`}
+              title="إرسال إشارة استغاثة وطوارئ عاجل SOS وتشغيل سارينة الإنذار"
+            >
+              <span className="text-base animate-bounce">🆘</span>
+              <span>{activeSosAlert ? 'طوارئ نشطة 🚨' : 'طوارئ SOS'}</span>
             </button>
 
             {/* Dynamic Reason selector if standby active */}
             {isStandby && showReasonPicker && (
-              <div className="sm:col-span-3 mt-1 p-3 bg-slate-900 border border-purple-500/40 rounded-xl animate-in fade-in">
+              <div className="col-span-2 sm:col-span-4 mt-1 p-3 bg-slate-900 border border-purple-500/40 rounded-xl animate-in fade-in">
                 <span className="text-xs text-purple-300 font-bold block mb-2">اختر سبب الانتظار والتوقف:</span>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                   {customStandbyReasonsList.filter(r => r.active).map(r => (
@@ -2067,6 +2244,44 @@ export const DriverInCab: React.FC<Props> = ({
                 className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer border border-slate-700"
               >
                 تسجيل الخروج والرجوع لشاشة الدخول
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Emergency SOS Confirmation Modal */}
+      {showSosConfirmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in">
+          <div className="w-full max-w-md bg-gradient-to-b from-rose-950 via-slate-900 to-slate-950 border-4 border-red-500 rounded-3xl p-6 shadow-2xl text-slate-100 text-center animate-in zoom-in-95">
+            <div className="w-20 h-20 rounded-full bg-red-600/30 border-4 border-red-500 flex items-center justify-center mx-auto mb-4 text-4xl animate-bounce">
+              🆘
+            </div>
+            <h3 className="text-xl font-black text-red-400 mb-2">
+              نداء طوارئ واستغاثة عاجل (SOS)
+            </h3>
+            <p className="text-xs text-slate-300 leading-relaxed mb-4">
+              سيتم إرسال إشارة استغاثة قصوى فوراً إلى غرفة الدسباتش والأدمن، وتشغيل سارينة إنذار مستمرة على التابلت حتى يتم تأكيد الاستلام من المراقب.
+            </p>
+            <div className="p-3 rounded-2xl bg-slate-950 border border-red-500/30 text-xs text-right space-y-1 mb-5">
+              <div>الدنبر: <strong className="text-amber-400 font-mono">{currentTruck?.id || selectedTruckId}</strong></div>
+              <div>السائق: <strong className="text-white">{currentDriver?.name || 'سائق الكابينة'}</strong> (كود: {currentDriver?.code})</div>
+            </div>
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={handleTriggerSosEmergency}
+                disabled={isSendingSos}
+                className="w-full py-4 rounded-2xl bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white font-black text-base shadow-2xl shadow-red-900/60 cursor-pointer active:scale-95 transition-transform border border-red-400 flex items-center justify-center gap-2"
+              >
+                <span className="text-xl">🚨</span>
+                <span>{isSendingSos ? 'جاري الإرسال...' : 'تأكيد إرسال استغاثة SOS وتشغيل الإنذار'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSosConfirmModal(false)}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer border border-slate-700"
+              >
+                إلغاء وتراجع
               </button>
             </div>
           </div>

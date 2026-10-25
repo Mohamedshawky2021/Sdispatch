@@ -1,4 +1,18 @@
-import { Truck, Radio, Smartphone, KeyRound, Clock, AlertTriangle, Wifi, WifiOff, BarChart3, Battery, BatteryWarning, Zap } from 'lucide-react';
+import {
+  Truck,
+  Radio,
+  Smartphone,
+  KeyRound,
+  Clock,
+  AlertTriangle,
+  Wifi,
+  WifiOff,
+  BarChart3,
+  Battery,
+  BatteryWarning,
+  Zap,
+  FileSpreadsheet,
+} from 'lucide-react';
 import { useBatteryStatus } from '../hooks/useBatteryStatus';
 
 interface Props {
@@ -12,6 +26,9 @@ interface Props {
   nextHourFormatted: string;
   isOnline?: boolean;
   pendingSyncCount?: number;
+  onDirectGoogleConnect?: () => void;
+  isGoogleConnected?: boolean;
+  googleUserEmail?: string | null;
 }
 
 export const HeaderNav: React.FC<Props> = ({
@@ -25,6 +42,9 @@ export const HeaderNav: React.FC<Props> = ({
   nextHourFormatted,
   isOnline = true,
   pendingSyncCount = 0,
+  onDirectGoogleConnect,
+  isGoogleConnected = false,
+  googleUserEmail,
 }) => {
   const battery = useBatteryStatus();
 
@@ -141,6 +161,30 @@ export const HeaderNav: React.FC<Props> = ({
             <span className="font-mono">{battery.level}%</span>
             {battery.charging && <span className="text-[10px] text-emerald-400 font-bold">⚡</span>}
           </div>
+
+          {/* External Direct Google Account & Spreadsheet Connect Button */}
+          {onDirectGoogleConnect && (
+            <button
+              type="button"
+              onClick={onDirectGoogleConnect}
+              className={`flex items-center gap-1.5 py-1.5 px-3 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                isGoogleConnected
+                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/50 hover:bg-emerald-900/60'
+                  : 'bg-indigo-950/90 text-indigo-300 border border-indigo-500/60 hover:bg-indigo-900/60 ring-1 ring-indigo-400/40 animate-pulse'
+              }`}
+              title={
+                isGoogleConnected
+                  ? `حساب جوجل متصل: ${googleUserEmail || 'sukaridispatch@gmail.com'}`
+                  : 'ربط مباشر بحساب جوجل (sukaridispatch@gmail.com) والمزامنة الفورية'
+              }
+            >
+              <FileSpreadsheet className={`w-3.5 h-3.5 ${isGoogleConnected ? 'text-emerald-400' : 'text-indigo-400'}`} />
+              <span className="hidden md:inline">
+                {isGoogleConnected ? 'جوجل متصل' : 'ربط جوجل مباشر'}
+              </span>
+              <span className={`w-2 h-2 rounded-full ${isGoogleConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`} />
+            </button>
+          )}
 
           <button
             onClick={onOpenHourlyArchive}

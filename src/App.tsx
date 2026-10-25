@@ -40,7 +40,13 @@ import {
   getTimeUntilNextHour,
   checkAndTriggerHourlyExport,
 } from './utils/hourlySyncEngine';
-import { triggerBackgroundSheetsSync } from './utils/googleSheets';
+import {
+  triggerBackgroundSheetsSync,
+  googleSignIn,
+  getAccessToken,
+  getCurrentGoogleUser,
+  initAuth,
+} from './utils/googleSheets';
 import { subscribeToCloudDispatcherMessages } from './utils/firebaseSync';
 import { playDispatchAlertSound } from './utils/audio';
 
@@ -71,8 +77,74 @@ export default function App() {
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(getPendingSyncCount());
 
-  // Success Toast for Hourly Sync
+  // Google Direct Connection state
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false);
+  const [googleUserEmail, setGoogleUserEmail] = useState<string | null>(null);
+
+  // Success Toast for Hourly Sync & Actions
   const [syncToast, setSyncToast] = useState<{ title: string; subtitle: string; whatsappText?: string } | null>(null);
+
+  // Check persistent Google token and attach auth listener
+  useEffect(() => {
+    const checkToken = async () => {
+      const token = await getAccessToken();
+      const user = getCurrentGoogleUser();
+      let email = user?.email || null;
+      if (!email && typeof window !== 'undefined') {
+        try {
+          const cached = localStorage.getItem('SUKARI_GOOGLE_USER_CACHE_V1');
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            email = parsed?.email || null;
+          }
+        } catch {}
+      }
+      setIsGoogleConnected(!!token);
+      setGoogleUserEmail(email);
+    };
+    checkToken();
+
+    const unsubAuth = initAuth(
+      (user) => {
+        setIsGoogleConnected(true);
+        setGoogleUserEmail(user.email);
+      },
+      () => {
+        if (typeof window !== 'undefined') {
+          const persisted = localStorage.getItem('SUKARI_GOOGLE_ACCESS_TOKEN_V1');
+          setIsGoogleConnected(!!persisted);
+        }
+      }
+    );
+
+    return () => {
+      if (unsubAuth) unsubAuth();
+    };
+  }, []);
+
+  // External direct Google login without requiring Admin PIN
+  const handleDirectGoogleConnect = async () => {
+    try {
+      const res = await googleSignIn();
+      if (res?.user) {
+        setIsGoogleConnected(true);
+        setGoogleUserEmail(res.user.email);
+        setSyncToast({
+          title: '✅ تم الربط بحساب Google بنجاح!',
+          subtitle: `الحساب المتصل: ${res.user.email || 'sukaridispatch@gmail.com'} — جاري المزامنة السحابية لشيت إكسل المعتمد`,
+        });
+        setTimeout(() => setSyncToast(null), 6000);
+        triggerBackgroundSheetsSync().catch(() => {});
+      }
+    } catch (err: any) {
+      console.error('Direct Google connect error:', err);
+      setSyncToast({
+        title: '⚠️ تعذر تسجيل الدخول بحساب Google',
+        subtitle: err?.message || 'يرجى التأكد من الاتصال بالإنترنت والمحاولة مجدداً',
+      });
+      setTimeout(() => setSyncToast(null), 6000);
+    }
+  };
 
   // Reload all data from local storage
   const reloadData = useCallback(() => {
@@ -268,6 +340,9 @@ export default function App() {
         nextHourFormatted={nextHourFormatted}
         isOnline={isOnline}
         pendingSyncCount={pendingSyncCount}
+        onDirectGoogleConnect={handleDirectGoogleConnect}
+        isGoogleConnected={isGoogleConnected}
+        googleUserEmail={googleUserEmail}
       />
 
       {/* Global Auto-Sync Toast Notification with Direct WhatsApp Share */}

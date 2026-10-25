@@ -33,6 +33,17 @@ import {
   syncTripToCloud,
   subscribeToCloudFleetTrips,
   fetchCloudFleetTrips,
+  syncFuelingToCloud,
+  subscribeToCloudFuelings,
+  fetchCloudFuelings,
+  syncDriverSessionToCloud,
+  subscribeToCloudDriverSessions,
+  fetchCloudDriverSessions,
+  syncStandbyToCloud,
+  subscribeToCloudStandbys,
+  StandbyCloudEvent,
+  sendEmergencySos,
+  EmergencySosAlert,
 } from './firebaseSync';
 
 const STORAGE_KEYS = {
@@ -1260,13 +1271,15 @@ export function startTruckFuelingEnRoute(
   // Close any previously hanging active session for this truck
   const cleaned = current.map(f => {
     if (f.truckId === truckId && f.status !== 'COMPLETED') {
-      return { ...f, status: 'COMPLETED' as const, endTime: now };
+      const closed = { ...f, status: 'COMPLETED' as const, endTime: now };
+      syncFuelingToCloud(closed).catch(console.error);
+      return closed;
     }
     return f;
   });
 
   const newLog: FuelingLog = {
-    id: `FUEL-${Date.now()}`,
+    id: `FUEL-${truckId}-${Date.now()}`,
     truckId,
     driverCode,
     driverName,
@@ -1279,6 +1292,10 @@ export function startTruckFuelingEnRoute(
   const updated = [newLog, ...cleaned];
   saveFuelingLogs(updated);
 
+  // Sync distinct fueling event to cloud
+  syncFuelingToCloud(newLog).catch(console.error);
+
+  // Update truck status in /fleet_trucks/{truckId}
   updateTruckStatus(truckId, 'FUELING', 'رايح يفول جاز ⛽ (في الطريق للمحطة)');
   return newLog;
 }
@@ -1303,6 +1320,7 @@ export function advanceTruckFuelingAtStation(truckId: string): FuelingLog | null
 
   if (updatedLog) {
     saveFuelingLogs(updated);
+    syncFuelingToCloud(updatedLog).catch(console.error);
     updateTruckStatus(truckId, 'FUELING', 'وصل البنزينة وجاري التفويل ⛽');
   }
   return updatedLog;
@@ -1328,6 +1346,7 @@ export function advanceTruckFuelingDepartStation(truckId: string): FuelingLog | 
 
   if (updatedLog) {
     saveFuelingLogs(updated);
+    syncFuelingToCloud(updatedLog).catch(console.error);
     updateTruckStatus(truckId, 'ACTIVE', 'طلع من البنزينة وعائد للحفرة 🚚');
   }
   return updatedLog;
@@ -1358,6 +1377,7 @@ export function advanceTruckFuelingStartLoading(truckId: string, excavatorId?: s
 
   if (completedLog) {
     saveFuelingLogs(updated);
+    syncFuelingToCloud(completedLog).catch(console.error);
     updateTruckStatus(truckId, 'LOADING', excavatorId ? `بدأ التحميل عند ${excavatorId} 🏗️` : 'بدأ التحميل 🏗️');
   }
   return completedLog;
@@ -1415,13 +1435,15 @@ export function recordDriverLoginSession(driverCode: string, driverName: string,
     if (s.truckId === truckId && s.status === 'ACTIVE') {
       const start = new Date(s.loginTime).getTime();
       const durationMinutes = Math.max(1, Math.round((now.getTime() - start) / 60000));
-      return { ...s, status: 'CLOSED' as const, logoutTime: nowIso, totalDurationMinutes: durationMinutes };
+      const closed = { ...s, status: 'CLOSED' as const, logoutTime: nowIso, totalDurationMinutes: durationMinutes };
+      syncDriverSessionToCloud(closed).catch(console.error);
+      return closed;
     }
     return s;
   });
 
   const newSession: DriverSessionRecord = {
-    id: `SESS-${Date.now()}`,
+    id: `SESS-${truckId}-${driverCode}-${Date.now()}`,
     driverCode,
     driverName,
     truckId,
@@ -1434,6 +1456,16 @@ export function recordDriverLoginSession(driverCode: string, driverName: string,
 
   const updated = [newSession, ...cleaned];
   saveDriverSessions(updated);
+
+  // Sync session and truck state
+  syncDriverSessionToCloud(newSession).catch(console.error);
+  syncTruckLiveStateToCloud(truckId, {
+    status: 'ACTIVE',
+    assignedDriver: driverCode,
+    statusNote: 'في الخدمة 🟢',
+    lastStatusChange: nowIso,
+  }).catch(console.error);
+
   return newSession;
 }
 
@@ -1461,7 +1493,75 @@ export function recordDriverLogoutSession(truckId: string, tripsCount: number, t
   });
 
   saveDriverSessions(updated);
+
+  if (closedSession) {
+    syncDriverSessionToCloud(closedSession).catch(console.error);
+    syncTruckLiveStateToCloud(truckId, {
+      status: 'STANDBY_QUEUE',
+      assignedDriver: '',
+      statusNote: 'تسليم الوردية وانصراف السائق',
+      lastStatusChange: nowIso,
+    }).catch(console.error);
+  }
+
   return closedSession;
+}
+
+// ==========================================
+// DISTINCT STANDBY & DELAY TRACKING
+// ==========================================
+
+export function recordStandbyStart(
+  truckId: string,
+  driverCode: string,
+  driverName: string,
+  reason: StandbyReason,
+  reasonLabelAr?: string
+): StandbyCloudEvent {
+  const standbyId = `STDBY-${truckId}-${Date.now()}`;
+  const nowIso = new Date().toISOString();
+  const label = reasonLabelAr || getStandbyReasonArabicLabel(reason);
+
+  const event: StandbyCloudEvent = {
+    id: standbyId,
+    truckId,
+    driverCode,
+    driverName,
+    reason,
+    reasonLabelAr: label,
+    startTime: nowIso,
+    status: 'ACTIVE',
+  };
+
+  syncStandbyToCloud(event).catch(console.error);
+  updateTruckStatus(truckId, 'STANDBY_QUEUE', label);
+
+  return event;
+}
+
+export function recordStandbyEnd(
+  standbyId: string | null,
+  truckId: string,
+  durationSeconds: number
+): void {
+  const nowIso = new Date().toISOString();
+
+  if (standbyId) {
+    syncStandbyToCloud({
+      id: standbyId,
+      truckId,
+      driverCode: '',
+      driverName: '',
+      reason: 'QUEUE',
+      reasonLabelAr: 'استاند باي',
+      startTime: nowIso,
+      endTime: nowIso,
+      durationSeconds,
+      status: 'COMPLETED',
+    }).catch(console.error);
+  }
+
+  updateTruckStatus(truckId, 'ACTIVE', 'استئناف العمل 🟢');
 }
 
 // ==========================================
@@ -2066,6 +2166,44 @@ if (typeof window !== 'undefined') {
       }
     } catch (e) {
       console.warn('Error applying equipment alerts update:', e);
+    }
+  });
+
+  // 5. Real-time distinct fueling sync across all tablets
+  subscribeToCloudFuelings((cloudFuelings) => {
+    try {
+      if (cloudFuelings && cloudFuelings.length > 0) {
+        const current = getFuelingLogs();
+        const map = new Map<string, FuelingLog>();
+        current.forEach(f => map.set(f.id, f));
+        cloudFuelings.forEach(f => map.set(f.id, f));
+        const merged = Array.from(map.values()).sort(
+          (a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()
+        );
+        localStorage.setItem(STORAGE_KEYS.FUELING_LOGS, JSON.stringify(merged));
+        broadcastDataChange('FUELING_LOGS_UPDATED', merged);
+      }
+    } catch (e) {
+      console.warn('Error applying cloud fuelings update:', e);
+    }
+  });
+
+  // 6. Real-time distinct driver sessions sync across all devices
+  subscribeToCloudDriverSessions((cloudSessions) => {
+    try {
+      if (cloudSessions && cloudSessions.length > 0) {
+        const current = getDriverSessions();
+        const map = new Map<string, DriverSessionRecord>();
+        current.forEach(s => map.set(s.id, s));
+        cloudSessions.forEach(s => map.set(s.id, s));
+        const merged = Array.from(map.values()).sort(
+          (a, b) => new Date(b.loginTime).getTime() - new Date(a.loginTime).getTime()
+        );
+        localStorage.setItem(STORAGE_KEYS.DRIVER_SESSIONS, JSON.stringify(merged));
+        broadcastDataChange('DRIVER_SESSIONS_UPDATED', merged);
+      }
+    } catch (e) {
+      console.warn('Error applying cloud driver sessions update:', e);
     }
   });
 }

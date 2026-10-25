@@ -60,6 +60,9 @@ import {
   subscribeToEquipmentPresence,
   EquipmentPresenceInfo,
   sendCloudDispatcherMessage,
+  subscribeToEmergencySos,
+  acknowledgeEmergencySos,
+  EmergencySosAlert,
 } from '../utils/firebaseSync';
 
 interface Props {
@@ -98,13 +101,19 @@ export const DispatcherControlRoom: React.FC<Props> = ({
   onNavigateToDashboard,
 }) => {
   const [fleetTab, setFleetTab] = useState<'TRUCKS' | 'LOADERS' | 'CHARTS'>('TRUCKS');
-  const [truckStatusFilter, setTruckStatusFilter] = useState<'ALL' | 'ACTIVE' | 'BREAKDOWN' | 'MAINTENANCE'>('ALL');
+  const [truckStatusFilter, setTruckStatusFilter] = useState<
+    'ALL' | 'ACTIVE' | 'FUELING' | 'STANDBY_QUEUE' | 'BREAKDOWN' | 'MAINTENANCE'
+  >('ALL');
   const [filterMaterial, setFilterMaterial] = useState<string>('ALL');
   const [filterTruck, setFilterTruck] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastPriority, setBroadcastPriority] = useState<'NORMAL' | 'URGENT'>('NORMAL');
   const [broadcastTarget, setBroadcastTarget] = useState<'ALL' | 'TRUCKS_ALL' | 'EXCAVATORS_ALL'>('ALL');
+
+  // Emergency SOS Realtime Beacon State
+  const [sosAlerts, setSosAlerts] = useState<EmergencySosAlert[]>([]);
+  const [isAcknowledgingSos, setIsAcknowledgingSos] = useState<boolean>(false);
 
   // Real-time Presence map from Firebase
   const [presenceMap, setPresenceMap] = useState<Record<string, EquipmentPresenceInfo>>({});
@@ -143,6 +152,15 @@ export const DispatcherControlRoom: React.FC<Props> = ({
       setPresenceMap(map);
     });
 
+    // Subscribe to cloud emergency SOS alerts from any truck in the mine
+    const unsubSos = subscribeToEmergencySos((alertsList) => {
+      setSosAlerts(alertsList);
+      const unack = alertsList.find(a => !a.acknowledged && a.status === 'ACTIVE');
+      if (unack) {
+        playDispatchAlertSound();
+      }
+    });
+
     const unsub = subscribeToDataChanges(event => {
       if (event.type === 'FUELING_LOGS_UPDATED' || event.type === 'TRUCKS_UPDATED') {
         refreshFuel();
@@ -161,8 +179,22 @@ export const DispatcherControlRoom: React.FC<Props> = ({
     return () => {
       unsub();
       unsubPresence();
+      unsubSos();
     };
   }, []);
+
+  // Handle Dispatcher one-click SOS Acknowledgement
+  const handleAcknowledgeSos = async (alertId: string) => {
+    setIsAcknowledgingSos(true);
+    playClickSound();
+    try {
+      await acknowledgeEmergencySos(alertId, 'غرفة الدسباتش (المراقب الميداني)');
+    } catch (err) {
+      console.error('Failed to acknowledge SOS:', err);
+    } finally {
+      setIsAcknowledgingSos(false);
+    }
+  };
 
   const activeBreakdownsCount = equipmentAlerts.filter(a => !a.resolved && (a.status === 'BREAKDOWN' || a.status === 'MAINTENANCE')).length;
 
@@ -346,6 +378,54 @@ export const DispatcherControlRoom: React.FC<Props> = ({
 
   return (
     <div className="flex-1 flex flex-col p-3 md:p-6 max-w-7xl mx-auto w-full space-y-6">
+      {/* Real-time Emergency SOS Beacon Alerts from any Truck in the mine */}
+      {sosAlerts.filter(a => !a.acknowledged && a.status === 'ACTIVE').length > 0 && (
+        <div className="space-y-3">
+          {sosAlerts
+            .filter(a => !a.acknowledged && a.status === 'ACTIVE')
+            .map((sos) => (
+              <div
+                key={sos.id}
+                className="bg-gradient-to-r from-rose-950 via-red-900 to-rose-950 border-4 border-red-500 rounded-2xl p-4 md:p-5 shadow-2xl animate-pulse flex flex-col md:flex-row items-center justify-between gap-4"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-14 h-14 rounded-2xl bg-red-600 border-2 border-white flex items-center justify-center text-3xl font-black text-white shrink-0 animate-bounce shadow-xl">
+                    🆘
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg md:text-xl font-black text-white tracking-wide">
+                        🚨 إشارة استغاثة وطوارئ عاجلة (SOS) من الدنبر [{sos.truckId}]
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-red-600 text-white text-xs font-mono font-black animate-ping">
+                        CRITICAL SOS
+                      </span>
+                    </div>
+                    <p className="text-sm text-red-100 mt-1">
+                      السائق: <strong>{sos.driverName}</strong> (كود: {sos.driverCode}) — {sos.message}
+                    </p>
+                    <div className="text-xs text-red-300 mt-0.5 font-mono">
+                      وقت النداء: {new Date(sos.timestamp).toLocaleTimeString('ar-EG')} — سارينة الإنذار تعمل حالياً بكابينة السائق حتى تأكيد الاستلام!
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleAcknowledgeSos(sos.id)}
+                    disabled={isAcknowledgingSos}
+                    className="py-3 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm flex items-center gap-2 shadow-2xl cursor-pointer active:scale-95 transition-transform border border-emerald-400"
+                  >
+                    <CheckCircle2 className="w-5 h-5 text-white" />
+                    <span>{isAcknowledgingSos ? 'جاري التأكيد...' : 'تأكيد الاستلام وإيقاف الإنذار 🛑'}</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+
       {/* Top Banner & Quick Controls */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
         <div>
@@ -735,33 +815,60 @@ export const DispatcherControlRoom: React.FC<Props> = ({
             </div>
 
             {fleetTab === 'TRUCKS' && (
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 flex-wrap">
                 <button
                   type="button"
                   onClick={() => setTruckStatusFilter('ALL')}
-                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors ${
+                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
                     truckStatusFilter === 'ALL' ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300'
                   }`}
                 >
-                  الكل (60)
+                  الكل ({trucks.length})
                 </button>
                 <button
                   type="button"
                   onClick={() => setTruckStatusFilter('ACTIVE')}
-                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors ${
+                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
                     truckStatusFilter === 'ACTIVE' ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'text-slate-500 hover:text-slate-300'
                   }`}
                 >
-                  في الخدمة
+                  في الخدمة 🟢
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTruckStatusFilter('FUELING')}
+                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                    truckStatusFilter === 'FUELING' ? 'bg-amber-950 text-amber-300 border border-amber-500/40' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  بيفول ⛽
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTruckStatusFilter('STANDBY_QUEUE')}
+                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                    truckStatusFilter === 'STANDBY_QUEUE' ? 'bg-purple-950 text-purple-300 border border-purple-500/40' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  استاند باي ⏳
                 </button>
                 <button
                   type="button"
                   onClick={() => setTruckStatusFilter('BREAKDOWN')}
-                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors ${
+                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
                     truckStatusFilter === 'BREAKDOWN' ? 'bg-rose-950 text-rose-300 border border-rose-500/40' : 'text-slate-500 hover:text-slate-300'
                   }`}
                 >
-                  أعطال ⚠️
+                  أعطال 🚨
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTruckStatusFilter('MAINTENANCE')}
+                  className={`py-1 px-2.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                    truckStatusFilter === 'MAINTENANCE' ? 'bg-slate-800 text-slate-300 border border-slate-600' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  صيانة 🔧
                 </button>
               </div>
             )}
@@ -789,11 +896,15 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                 {orderedTrucks
                   .filter(t => {
                     if (truckStatusFilter === 'ACTIVE') return t.status === 'ACTIVE' || t.status === 'LOADING' || t.status === 'HAULING';
+                    if (truckStatusFilter === 'FUELING') return t.status === 'FUELING';
+                    if (truckStatusFilter === 'STANDBY_QUEUE') return t.status === 'STANDBY_QUEUE';
                     if (truckStatusFilter === 'BREAKDOWN') return t.status === 'BREAKDOWN';
                     if (truckStatusFilter === 'MAINTENANCE') return t.status === 'MAINTENANCE';
                     return true;
                   })
                   .map(truck => {
+                    const isFueling = truck.status === 'FUELING';
+                    const isStandby = truck.status === 'STANDBY_QUEUE';
                     const isBreakdown = truck.status === 'BREAKDOWN';
                     const isMaint = truck.status === 'MAINTENANCE';
 
@@ -811,9 +922,13 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                             : draggedTruckId === truck.id
                             ? 'opacity-40 border-dashed border-slate-600 bg-slate-900'
                             : isBreakdown
-                            ? 'bg-rose-950/30 border-rose-500/50'
+                            ? 'bg-rose-950/40 border-rose-500/60 shadow-rose-950/40'
+                            : isFueling
+                            ? 'bg-amber-950/40 border-amber-500/60'
+                            : isStandby
+                            ? 'bg-purple-950/40 border-purple-500/60'
                             : isMaint
-                            ? 'bg-amber-950/30 border-amber-500/50'
+                            ? 'bg-slate-900 border-slate-700'
                             : 'bg-slate-950/70 border-slate-800 hover:border-slate-700'
                         }`}
                       >
@@ -841,19 +956,23 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                           </div>
                           <span className={`text-[9px] font-bold py-0.5 px-1.5 rounded ${
                             isBreakdown
-                              ? 'bg-rose-900 text-rose-200'
-                              : isMaint
+                              ? 'bg-rose-900 text-rose-200 animate-pulse'
+                              : isFueling
                               ? 'bg-amber-900 text-amber-200'
+                              : isStandby
+                              ? 'bg-purple-900 text-purple-200'
+                              : isMaint
+                              ? 'bg-slate-800 text-slate-300'
                               : 'bg-emerald-950 text-emerald-300'
                           }`}>
-                            {isBreakdown ? 'عطل' : isMaint ? 'صيانة' : 'شغال'}
+                            {isBreakdown ? 'عطل 🚨' : isFueling ? 'بيفول ⛽' : isStandby ? 'انتظار ⏳' : isMaint ? 'صيانة 🔧' : 'شغال 🟢'}
                           </span>
                         </div>
-                        <div className="text-[10px] text-slate-400 truncate">
-                          {truck.statusNote || `${truck.capacityTonnes} طن · CAT 785`}
+                        <div className="text-[10px] text-slate-300 truncate font-medium">
+                          {truck.statusNote || (truck.assignedDriver ? `سائق: ${truck.assignedDriver}` : `${truck.capacityTonnes} طن · CAT 785`)}
                         </div>
                         <div className="mt-1.5 pt-1 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
-                          <span className="text-slate-500">حمولات: <strong className="font-bold font-mono text-emerald-400">{truck.tripsToday || 0}</strong></span>
+                          <span className="text-slate-400">حمولات: <strong className="font-bold font-mono text-emerald-400">{truck.tripsToday || 0}</strong> ({truck.tonnesToday || 0}t)</span>
                           <button
                             type="button"
                             onClick={(e) => {

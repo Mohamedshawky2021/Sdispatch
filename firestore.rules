@@ -85,6 +85,30 @@ service cloud.firestore {
       allow write: if isValidId(alertId);
     }
 
+    // High-Priority Emergency SOS Alerts
+    match /fleet_emergency_alerts/{alertId} {
+      allow read: if true;
+      allow write: if isValidId(alertId);
+    }
+
+    // Distinct per-truck Fueling records (Prevents multi-truck fueling overwrite)
+    match /fleet_fuelings/{fuelingId} {
+      allow read: if true;
+      allow write: if isValidId(fuelingId);
+    }
+
+    // Distinct per-truck Standby and Queue Delay logs
+    match /fleet_standbys/{standbyId} {
+      allow read: if true;
+      allow write: if isValidId(standbyId);
+    }
+
+    // Distinct Driver Shift Attendance & Cab Login Sessions
+    match /fleet_driver_sessions/{sessionId} {
+      allow read: if true;
+      allow write: if isValidId(sessionId);
+    }
+
     // Default deny for everything else
     match /{document=**} {
       allow read, write: if false;
