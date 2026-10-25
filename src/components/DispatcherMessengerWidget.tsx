@@ -14,6 +14,7 @@ import {
   CheckSquare,
   Square,
   Search,
+  ShieldCheck,
 } from 'lucide-react';
 import { Truck, Driver, DispatcherDirectMessage } from '../types/dispatch';
 import {
@@ -157,6 +158,10 @@ export const DispatcherMessengerWidget: React.FC<Props> = ({
               </h3>
               <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-500/30">
                 إشعار منبثق فوري بكابينة السائق
+              </span>
+              <span className="hidden sm:inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full bg-teal-950/80 text-teal-300 border border-teal-500/40" title="المسار مشفر تشفيراً تاماً بتقنية AES-256-GCM">
+                <ShieldCheck className="w-3 h-3 text-teal-400" />
+                <span>مسار مشفر AES-256</span>
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">

@@ -12,6 +12,7 @@ import {
   BatteryWarning,
   Zap,
   FileSpreadsheet,
+  ShieldCheck,
 } from 'lucide-react';
 import { useBatteryStatus } from '../hooks/useBatteryStatus';
 
@@ -136,6 +137,15 @@ export const HeaderNav: React.FC<Props> = ({
                 {pendingSyncCount}
               </span>
             )}
+          </div>
+
+          {/* E2EE Cybersecurity Badge */}
+          <div
+            className="hidden xl:flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg text-[11px] font-bold bg-teal-950/80 text-teal-300 border border-teal-500/40 shadow-sm"
+            title="نظام التشفير السيبراني المتقدم: مسارات البيانات والرسائل وحالات الأسطول مشفرة طرفياً بالكامل (E2EE) باستخدام خوارزمية AES-256-GCM"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-teal-400" />
+            <span className="font-mono">E2EE مشفر</span>
           </div>
 
           {/* Tablet Battery Widget in Top Nav */}

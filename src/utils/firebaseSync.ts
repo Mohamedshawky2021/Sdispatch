@@ -25,6 +25,7 @@ import {
   FuelingLog,
   DriverSessionRecord,
 } from '../types/dispatch';
+import { encryptData, decryptData } from './cryptoSecurity';
 
 // Ensure Firebase is initialized
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -123,10 +124,14 @@ export async function sendCloudDispatcherMessage(
   driverName?: string
 ): Promise<DispatcherDirectMessage> {
   const messageId = 'MSG_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+  
+  // Encrypt message text end-to-end with AES-256-GCM so only authorized terminals decrypt it
+  const encryptedText = await encryptData(messageText);
+
   const newMsg: DispatcherDirectMessage = {
     id: messageId,
     targetTruckId: targetId,
-    messageText,
+    messageText, // locally in cleartext
     priority,
     sender,
     timestamp: new Date().toISOString(),
@@ -136,16 +141,21 @@ export async function sendCloudDispatcherMessage(
 
   const path = `dispatcher_messages/${messageId}`;
   try {
-    // Sanitize object to remove any undefined fields that cause Firestore errors
+    // Write encrypted payload across the cloud wire
+    const cloudPayload = {
+      ...newMsg,
+      messageText: encryptedText, // ciphertext on network & Firestore
+      encrypted: true,
+    };
     const cleanDoc = Object.fromEntries(
-      Object.entries(newMsg).filter(([_, v]) => v !== undefined)
+      Object.entries(cloudPayload).filter(([_, v]) => v !== undefined)
     );
     await setDoc(doc(db, 'dispatcher_messages', messageId), cleanDoc);
   } catch (err) {
     handleFirestoreError(err, OperationType.CREATE, path);
   }
 
-  // Also cache locally in localStorage
+  // Also cache locally in localStorage in cleartext for instant responsiveness
   try {
     const raw = localStorage.getItem('sukari_direct_messages_v2') || '[]';
     const local = JSON.parse(raw);
@@ -163,12 +173,23 @@ export function subscribeToCloudDispatcherMessages(
     const q = query(collection(db, path), orderBy('timestamp', 'desc'), limit(100));
     return onSnapshot(
       q,
-      (snapshot) => {
-        const list: DispatcherDirectMessage[] = [];
+      async (snapshot) => {
+        const rawList: DispatcherDirectMessage[] = [];
         snapshot.forEach((d) => {
-          list.push(d.data() as DispatcherDirectMessage);
+          rawList.push(d.data() as DispatcherDirectMessage);
         });
-        callback(list);
+
+        // End-to-End Decryption on arrival at authorized client terminal
+        const decryptedList = await Promise.all(
+          rawList.map(async (msg) => {
+            const clearText = await decryptData<string>(msg.messageText);
+            return {
+              ...msg,
+              messageText: clearText,
+            };
+          })
+        );
+        callback(decryptedList);
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, path);
@@ -331,8 +352,13 @@ export async function syncTruckLiveStateToCloud(
   if (!truckId) return;
   const path = `fleet_trucks/${truckId}`;
   try {
+    let cloudStatusNote = state.statusNote;
+    if (state.statusNote) {
+      cloudStatusNote = await encryptData(state.statusNote);
+    }
     const payload = {
       ...state,
+      statusNote: cloudStatusNote,
       id: truckId,
       lastUpdated: new Date().toISOString(),
       updatedBy,
@@ -353,11 +379,16 @@ export function subscribeToFleetTrucks(
   try {
     return onSnapshot(
       collection(db, path),
-      (snapshot) => {
+      async (snapshot) => {
         const map: Record<string, Partial<Truck>> = {};
-        snapshot.forEach((d) => {
-          map[d.id] = d.data() as Partial<Truck>;
-        });
+        for (const d of snapshot.docs) {
+          const raw = d.data() as Partial<Truck>;
+          const decryptedNote = raw.statusNote ? await decryptData<string>(raw.statusNote) : raw.statusNote;
+          map[d.id] = {
+            ...raw,
+            statusNote: decryptedNote,
+          };
+        }
         callback(map);
       },
       (error) => {
@@ -375,9 +406,14 @@ export async function fetchFleetTrucksFromCloud(): Promise<Record<string, Partia
   try {
     const snap = await getDocs(collection(db, path));
     const map: Record<string, Partial<Truck>> = {};
-    snap.forEach((d) => {
-      map[d.id] = d.data() as Partial<Truck>;
-    });
+    for (const d of snap.docs) {
+      const raw = d.data() as Partial<Truck>;
+      const decryptedNote = raw.statusNote ? await decryptData<string>(raw.statusNote) : raw.statusNote;
+      map[d.id] = {
+        ...raw,
+        statusNote: decryptedNote,
+      };
+    }
     return map;
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, path);
@@ -482,13 +518,17 @@ export async function sendEmergencySos(
 ): Promise<EmergencySosAlert> {
   const alertId = `SOS_${truckId}_${Date.now()}`;
   const nowIso = new Date().toISOString();
+
+  // Encrypt SOS emergency message end-to-end with AES-256-GCM
+  const encryptedMsg = await encryptData(message);
+
   const alert: EmergencySosAlert = {
     id: alertId,
     truckId,
     driverCode,
     driverName,
     timestamp: nowIso,
-    message,
+    message, // local object retains cleartext
     severity: 'CRITICAL',
     acknowledged: false,
     status: 'ACTIVE',
@@ -496,8 +536,13 @@ export async function sendEmergencySos(
 
   const path = `fleet_emergency_alerts/${alertId}`;
   try {
+    const cloudPayload = {
+      ...alert,
+      message: encryptedMsg, // ciphertext on network path
+      encrypted: true,
+    };
     const cleanDoc = Object.fromEntries(
-      Object.entries(alert).filter(([_, v]) => v !== undefined)
+      Object.entries(cloudPayload).filter(([_, v]) => v !== undefined)
     );
     await setDoc(doc(db, 'fleet_emergency_alerts', alertId), cleanDoc);
 
@@ -508,7 +553,7 @@ export async function sendEmergencySos(
       lastStatusChange: nowIso,
     });
 
-    // Also trigger high-priority dispatcher message
+    // Also trigger high-priority dispatcher message (which is itself encrypted)
     await sendCloudDispatcherMessage(
       'ALL',
       `🚨 إشارة طوارئ واستغاثة (SOS) نشطة من الدنبر [${truckId}] - السائق: ${driverName}`,
@@ -576,12 +621,19 @@ export function subscribeToEmergencySos(
     const q = query(collection(db, path), orderBy('timestamp', 'desc'), limit(30));
     return onSnapshot(
       q,
-      (snapshot) => {
-        const list: EmergencySosAlert[] = [];
+      async (snapshot) => {
+        const rawList: EmergencySosAlert[] = [];
         snapshot.forEach((d) => {
-          list.push(d.data() as EmergencySosAlert);
+          rawList.push(d.data() as EmergencySosAlert);
         });
-        callback(list);
+        // Decrypt SOS messages on arrival at Dispatcher terminal
+        const decryptedList = await Promise.all(
+          rawList.map(async (a) => ({
+            ...a,
+            message: await decryptData<string>(a.message),
+          }))
+        );
+        callback(decryptedList);
       },
       (err) => {
         handleFirestoreError(err, OperationType.GET, path);
@@ -607,13 +659,19 @@ export function subscribeToTruckActiveSos(
     );
     return onSnapshot(
       q,
-      (snapshot) => {
-        const list: EmergencySosAlert[] = [];
+      async (snapshot) => {
+        const rawList: EmergencySosAlert[] = [];
         snapshot.forEach((d) => {
-          list.push(d.data() as EmergencySosAlert);
+          rawList.push(d.data() as EmergencySosAlert);
         });
+        const decryptedList = await Promise.all(
+          rawList.map(async (a) => ({
+            ...a,
+            message: await decryptData<string>(a.message),
+          }))
+        );
         // Find latest active or recently acknowledged alert
-        const active = list.find((a) => a.status === 'ACTIVE' || (!a.acknowledged && a.status !== 'CANCELLED')) || list[0] || null;
+        const active = decryptedList.find((a) => a.status === 'ACTIVE' || (!a.acknowledged && a.status !== 'CANCELLED')) || decryptedList[0] || null;
         callback(active);
       },
       (err) => {

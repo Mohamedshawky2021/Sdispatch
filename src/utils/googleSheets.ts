@@ -143,6 +143,16 @@ export const initAuth = (
   });
 };
 
+const TOKEN_TIMESTAMP_KEY = 'SUKARI_GOOGLE_TOKEN_TIME_V1';
+
+export const clearCachedGoogleToken = () => {
+  cachedAccessToken = null;
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(TOKEN_TIMESTAMP_KEY);
+  }
+};
+
 /**
  * Sign in with Google to obtain Workspace Access Token and permanently cache it
  */
@@ -158,9 +168,10 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     cachedAccessToken = credential.accessToken;
     currentUser = result.user;
 
-    // Persist permanently in localStorage so user is NEVER logged out on reload or tablet reboot
+    // Persist permanently in localStorage with timestamp
     if (typeof window !== 'undefined') {
       localStorage.setItem(ACCESS_TOKEN_KEY, cachedAccessToken);
+      localStorage.setItem(TOKEN_TIMESTAMP_KEY, Date.now().toString());
       localStorage.setItem(
         USER_CACHE_KEY,
         JSON.stringify({
@@ -174,7 +185,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error('Google Sign In Error:', error);
+    console.warn('Google Sign In warning:', error?.message || error);
     throw error;
   } finally {
     isSigningIn = false;
@@ -182,15 +193,27 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  if (cachedAccessToken) return cachedAccessToken;
-  if (typeof window !== 'undefined') {
-    const persisted = localStorage.getItem(ACCESS_TOKEN_KEY);
-    if (persisted) {
-      cachedAccessToken = persisted;
-      return persisted;
+  if (typeof window === 'undefined') return null;
+
+  const persisted = localStorage.getItem(ACCESS_TOKEN_KEY);
+  if (!persisted) {
+    cachedAccessToken = null;
+    return null;
+  }
+
+  // Verify token expiry: Google OAuth access tokens expire after 60 minutes
+  const timeStr = localStorage.getItem(TOKEN_TIMESTAMP_KEY);
+  if (timeStr) {
+    const elapsed = Date.now() - parseInt(timeStr, 10);
+    if (elapsed > 55 * 60 * 1000) {
+      // Token expired, clear it cleanly so background sync won't repeatedly fail
+      clearCachedGoogleToken();
+      return null;
     }
   }
-  return null;
+
+  cachedAccessToken = persisted;
+  return persisted;
 };
 
 export const getCurrentGoogleUser = (): User | null => {
@@ -201,11 +224,10 @@ export const googleLogout = async () => {
   try {
     await signOut(auth);
   } catch {}
+  clearCachedGoogleToken();
   if (typeof window !== 'undefined') {
-    localStorage.removeItem(ACCESS_TOKEN_KEY);
     localStorage.removeItem(USER_CACHE_KEY);
   }
-  cachedAccessToken = null;
   currentUser = null;
 };
 
@@ -562,24 +584,38 @@ export async function syncAllDataToGoogleSheet(
       },
     ];
 
-    const batchRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          valueInputOption: 'USER_ENTERED',
-          data: updateData,
-        }),
-      }
-    );
+    let batchRes: Response;
+    try {
+      batchRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            valueInputOption: 'USER_ENTERED',
+            data: updateData,
+          }),
+        }
+      );
+    } catch (fetchErr: any) {
+      console.warn('[GoogleSheets] Network or CORS restriction on direct sync:', fetchErr?.message || fetchErr);
+      clearCachedGoogleToken();
+      return {
+        success: false,
+        syncedTrips: 0,
+        error: 'انتهت صلاحية جلسة Google أو لا تتوفر استجابة من السيرفر حالياً',
+      };
+    }
 
     if (!batchRes.ok) {
-      const err = await batchRes.text();
-      return { success: false, syncedTrips: 0, error: `فشل إرسال البيانات للجدول: ${err}` };
+      if (batchRes.status === 401 || batchRes.status === 403) {
+        clearCachedGoogleToken();
+      }
+      const err = await batchRes.text().catch(() => '');
+      return { success: false, syncedTrips: 0, error: `فشل استجابة الجدول (${batchRes.status}): ${err}` };
     }
 
     // Update stored metadata
@@ -594,7 +630,7 @@ export async function syncAllDataToGoogleSheet(
 
     return { success: true, syncedTrips: trips.length };
   } catch (err: any) {
-    console.error('Error syncing to Google Sheet:', err);
+    console.warn('[GoogleSheets] Sync skipped:', err?.message || err);
     return { success: false, syncedTrips: 0, error: err?.message || 'خطأ غير متوقع' };
   }
 }
@@ -662,6 +698,9 @@ export async function triggerBackgroundSheetsSync(
   getFuelingsFn?: () => FuelingLog[],
   getSessionsFn?: () => DriverSessionRecord[]
 ): Promise<{ success: boolean; syncedTrips: number; error?: string }> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { success: false, syncedTrips: 0, error: 'التابلت يعمل أوفلاين دون اتصال بالإنترنت' };
+  }
   const config = getStoredSheetsConfig();
   if (!config || !config.spreadsheetId) {
     return { success: false, syncedTrips: 0, error: 'لم يتم ربط ملف Google Sheets بعد' };

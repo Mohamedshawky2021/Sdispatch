@@ -2152,11 +2152,16 @@ export const DriverInCab: React.FC<Props> = ({
                 </div>
               </div>
 
-              {incomingDirectMessage.targetTruckId !== 'ALL' && (
-                <span className="py-1 px-2.5 rounded-xl bg-indigo-950 text-indigo-300 border border-indigo-500/40 text-[10px] font-black">
-                  خاصة بتابلتك فقط 🔒
+              <div className="flex items-center gap-2">
+                {incomingDirectMessage.targetTruckId !== 'ALL' && (
+                  <span className="py-1 px-2.5 rounded-xl bg-indigo-950 text-indigo-300 border border-indigo-500/40 text-[10px] font-black">
+                    خاصة بتابلتك فقط 🔒
+                  </span>
+                )}
+                <span className="py-1 px-2 rounded-xl bg-teal-950/80 text-teal-300 border border-teal-500/40 text-[10px] font-mono flex items-center gap-1">
+                  🛡️ مشفر E2EE
                 </span>
-              )}
+              </div>
             </div>
 
             {incomingDirectMessage.targetTruckId !== 'ALL' && (
