@@ -490,6 +490,7 @@ export async function syncAllDataToGoogleSheet(
       'إجمالي مدة الوردية (دقيقة)',
       'عدد النقلات المنجزة',
       'إجمالي الأطنان المنقولة',
+      'موقع الركنة (Parking Location)',
       'حالة الجلسة',
       'تاريخ الوردية',
     ];
@@ -504,6 +505,7 @@ export async function syncAllDataToGoogleSheet(
       s.totalDurationMinutes || '-',
       s.tripsCompleted,
       s.tonnesMoved,
+      s.parkingLocation || '-',
       s.status === 'ACTIVE' ? 'شغال حالياً في الوردية' : 'مغلق ومسلم للوردية',
       s.date,
     ]);
@@ -519,6 +521,7 @@ export async function syncAllDataToGoogleSheet(
       'عدد نقلات اليوم',
       'أطنان اليوم',
       'السائق الحالي / الطابور',
+      'آخر موقع ركنة (Parking)',
       'ملاحظات الحالة والأعطال',
     ];
 
@@ -540,6 +543,7 @@ export async function syncAllDataToGoogleSheet(
       t.tripsToday || 0,
       t.tonnesToday || (t.tripsToday || 0) * (t.capacityTonnes || 152),
       t.assignedDriver ? `سائق كود ${t.assignedDriver}` : 'جاهز للتخصيص',
+      t.lastParkingLocation || '-',
       t.statusNote || 'جاهز للتشغيل',
     ]);
 

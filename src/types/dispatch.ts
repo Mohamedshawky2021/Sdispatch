@@ -58,6 +58,8 @@ export interface Truck {
   tonnesToday?: number;
   lastStatusChange?: string;
   statusNote?: string;
+  lastParkingLocation?: string;
+  lastParkingTime?: string;
 }
 
 export interface Excavator {
@@ -69,6 +71,8 @@ export interface Excavator {
   trucksInQueue: number;
   status: EquipmentStatusCode;
   hourlyCapacityTonnes?: number;
+  statusNote?: string;
+  isAvailable?: boolean;
 }
 
 export interface DumpLocation {
@@ -76,8 +80,20 @@ export interface DumpLocation {
   nameAr: string;
   type: 'CRUSHER' | 'WASTE_DUMP' | 'ROM_PAD' | 'LEACH_PAD';
   targetMaterial: MaterialType;
-  activeStatus: 'OPEN' | 'CONGESTED' | 'MAINTENANCE' | 'FULL';
+  activeStatus: 'OPEN' | 'CONGESTED' | 'MAINTENANCE' | 'FULL' | 'CLOSED' | 'INACTIVE';
   currentBenches: string;
+  statusNote?: string;
+  isAvailable?: boolean;
+}
+
+export interface ParkingLocation {
+  id: string; // e.g. PARK-01
+  nameAr: string; // e.g. موقف الورشة المركزية
+  code: string; // e.g. P-WORKSHOP
+  area?: string; // e.g. الورشة المركزية
+  capacity?: number;
+  active: boolean;
+  notes?: string;
 }
 
 export interface TripLog {
@@ -148,6 +164,8 @@ export interface ShiftHandoverRecord {
   tripsCount: number;
   totalTonnes: number;
   standbySeconds: number;
+  parkingLocationId?: string;
+  parkingLocationName?: string;
   notes?: string;
   synced: boolean;
   syncedAt?: string;
@@ -185,6 +203,7 @@ export interface DriverSessionRecord {
   totalDurationMinutes?: number;
   tripsCompleted: number;
   tonnesMoved: number;
+  parkingLocation?: string;
   status: 'ACTIVE' | 'CLOSED';
   date: string;
 }

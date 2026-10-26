@@ -35,6 +35,7 @@ import {
   Square,
   Search,
   Filter,
+  MapPin,
 } from 'lucide-react';
 import {
   Driver,
@@ -44,6 +45,7 @@ import {
   MaterialType,
   DispatcherDirectMessage,
   CustomStandbyReason,
+  ParkingLocation,
 } from '../types/dispatch';
 import {
   getStoredDrivers,
@@ -70,6 +72,11 @@ import {
   updateCustomStandbyReason,
   deleteCustomStandbyReason,
   getDriverSessions,
+  getParkingLocations,
+  saveParkingLocations,
+  addParkingLocation,
+  updateParkingLocation,
+  deleteParkingLocation,
 } from '../utils/storage';
 import { checkAndTriggerHourlyExport } from '../utils/hourlySyncEngine';
 import { playClickSound, playLoadConfirmedSound, playDispatchAlertSound } from '../utils/audio';
@@ -108,12 +115,21 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
-  const [activeTab, setActiveTab] = useState<'DRIVERS' | 'TRUCKS' | 'EXCAVATORS' | 'DUMPS' | 'STANDBY_REASONS' | 'CONFIG' | 'GOOGLE_SHEETS' | 'DIRECT_MESSAGES'>('DRIVERS');
+  const [activeTab, setActiveTab] = useState<'DRIVERS' | 'TRUCKS' | 'EXCAVATORS' | 'DUMPS' | 'STANDBY_REASONS' | 'PARKINGS' | 'CONFIG' | 'GOOGLE_SHEETS' | 'DIRECT_MESSAGES'>('DRIVERS');
 
   // Master Data Editing States (Without Deleting)
   const [editingTruck, setEditingTruck] = useState<Truck | null>(null);
   const [editingExcavator, setEditingExcavator] = useState<Excavator | null>(null);
   const [editingDump, setEditingDump] = useState<DumpLocation | null>(null);
+
+  // Parking Locations Master Data
+  const [parkingLocations, setParkingLocations] = useState<ParkingLocation[]>(getParkingLocations());
+  const [newParkingName, setNewParkingName] = useState('');
+  const [newParkingCode, setNewParkingCode] = useState('');
+  const [newParkingArea, setNewParkingArea] = useState('');
+  const [newParkingCapacity, setNewParkingCapacity] = useState('10');
+  const [newParkingNotes, setNewParkingNotes] = useState('');
+  const [editingParking, setEditingParking] = useState<ParkingLocation | null>(null);
 
   // Custom Standby Reasons Management
   const [customStandbyReasons, setCustomStandbyReasons] = useState<CustomStandbyReason[]>(getCustomStandbyReasons());
@@ -863,6 +879,68 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
     onDataChanged();
   };
 
+  // Parking Locations Handlers
+  const handleAddParking = (e: React.FormEvent) => {
+    e.preventDefault();
+    recordActivity();
+    if (!newParkingName.trim()) return;
+
+    const code = newParkingCode.trim().toUpperCase() || `PARK-${Date.now().toString().slice(-4)}`;
+    const newParkingData = {
+      nameAr: newParkingName.trim(),
+      code,
+      area: newParkingArea.trim() || undefined,
+      capacity: Number(newParkingCapacity) || 10,
+      active: true,
+      notes: newParkingNotes.trim() || undefined,
+    };
+
+    const updated = addParkingLocation(newParkingData);
+    setParkingLocations(updated);
+    setNewParkingName('');
+    setNewParkingCode('');
+    setNewParkingArea('');
+    setNewParkingCapacity('10');
+    setNewParkingNotes('');
+    playLoadConfirmedSound();
+    showStatus(`تمت إضافة موقع الركنة (${newParkingData.nameAr}) وتعميمه فوراً على جميع التابلتات والأجهزة ✅`);
+    onDataChanged();
+  };
+
+  const handleToggleParkingActive = (id: string) => {
+    recordActivity();
+    const target = parkingLocations.find(p => p.id === id);
+    if (!target) return;
+    const updated = updateParkingLocation(id, { active: !target.active });
+    setParkingLocations(updated);
+    playClickSound();
+    showStatus(`تم تغيير حالة موقع الركنة (${target.nameAr}) إلى ${!target.active ? 'متاح ومفعل' : 'غير متاح وموقف'}`);
+    onDataChanged();
+  };
+
+  const handleDeleteParking = (id: string) => {
+    recordActivity();
+    if (parkingLocations.length <= 1) {
+      showStatus('لا يمكن حذف جميع مواقف الركن، يجب الإبقاء على موقع واحد على الأقل');
+      return;
+    }
+    const updated = deleteParkingLocation(id);
+    setParkingLocations(updated);
+    playClickSound();
+    showStatus('تم حذف موقع الركنة وتحديث القائمة المركزية');
+    onDataChanged();
+  };
+
+  const handleSaveParkingEdit = (parkingId: string, updates: Partial<ParkingLocation>) => {
+    recordActivity();
+    playClickSound();
+    const updated = updateParkingLocation(parkingId, updates);
+    setParkingLocations(updated);
+    setEditingParking(null);
+    showStatus(`تم تحديث بيانات موقع الركنة (${updates.nameAr || parkingId}) ومزامنتها لحظياً ✅`);
+    onDataChanged();
+  };
+
   const handleLockSession = () => {
     setIsAuthenticated(false);
     setPinInput('');
@@ -1126,6 +1204,18 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
               >
                 <Timer className="w-4 h-4" />
                 <span>أسباب الاستاند باي ({customStandbyReasons.length})</span>
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('PARKINGS'); recordActivity(); }}
+                className={`py-2 px-3.5 rounded-xl text-xs md:text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeTab === 'PARKINGS'
+                    ? 'bg-amber-500 text-slate-950 shadow-md'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+              >
+                <MapPin className="w-4 h-4" />
+                <span>مواقف الركنات (Parkings) ({parkingLocations.length})</span>
               </button>
 
               <button
@@ -1484,15 +1574,36 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
                               <td className="py-2 px-3 font-mono text-emerald-400 font-bold">{ex.id}</td>
                               <td className="py-2 px-3 text-slate-200">{ex.model}</td>
                               <td className="py-2 px-3">
-                                <span className={`text-[10px] font-bold py-0.5 px-2 rounded-full ${
-                                  ex.status === 'BREAKDOWN'
-                                    ? 'bg-rose-900 text-rose-200'
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const newStatus = ex.status === 'ACTIVE' ? 'BREAKDOWN' : 'ACTIVE';
+                                    handleSaveExcavatorEdit(ex.id, {
+                                      status: newStatus,
+                                      isAvailable: newStatus === 'ACTIVE',
+                                      statusNote: newStatus === 'ACTIVE' ? undefined : (ex.statusNote || 'عطل ميكانيكي / توقف طارئ')
+                                    });
+                                  }}
+                                  className={`text-[10px] font-bold py-1 px-2.5 rounded-full cursor-pointer transition-all border ${
+                                    ex.status === 'BREAKDOWN' || ex.isAvailable === false
+                                      ? 'bg-rose-950 text-rose-300 border-rose-500/50 hover:bg-rose-900'
+                                      : ex.status === 'MAINTENANCE'
+                                      ? 'bg-amber-950 text-amber-300 border-amber-500/50 hover:bg-amber-900'
+                                      : 'bg-emerald-950 text-emerald-300 border-emerald-500/50 hover:bg-emerald-900'
+                                  }`}
+                                  title="اضغط للتبديل السريع بين (شغال) و (عطل/لا يعمل)"
+                                >
+                                  {ex.status === 'BREAKDOWN' || ex.isAvailable === false
+                                    ? 'لا يعمل / عطل ⛔'
                                     : ex.status === 'MAINTENANCE'
-                                    ? 'bg-amber-900 text-amber-200'
-                                    : 'bg-emerald-950 text-emerald-300'
-                                }`}>
-                                  {ex.status === 'BREAKDOWN' ? 'عطل ⚠️' : ex.status === 'MAINTENANCE' ? 'صيانة 🔧' : 'شغال ✅'}
-                                </span>
+                                    ? 'صيانة 🔧'
+                                    : 'يعمل ✅'}
+                                </button>
+                                {ex.statusNote && (
+                                  <div className="text-[10px] text-rose-400 truncate max-w-[120px] mt-0.5" title={ex.statusNote}>
+                                    {ex.statusNote}
+                                  </div>
+                                )}
                               </td>
                               <td className="py-2 px-3 text-slate-300 font-mono">{ex.benchLevel}</td>
                               <td className="py-2 px-3">
@@ -1615,15 +1726,40 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
                                 {d.type === 'LEACH_PAD' && 'مكدس ترشيح'}
                               </td>
                               <td className="py-2 px-3">
-                                <span className={`text-[10px] font-bold py-0.5 px-2 rounded-full ${
-                                  d.activeStatus === 'MAINTENANCE'
-                                    ? 'bg-amber-900 text-amber-200'
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const newStatus = d.activeStatus === 'OPEN' ? 'CLOSED' : 'OPEN';
+                                    handleSaveDumpEdit(d.id, {
+                                      activeStatus: newStatus,
+                                      isAvailable: newStatus === 'OPEN',
+                                      statusNote: newStatus === 'OPEN' ? undefined : (d.statusNote || 'مغلق للصيانة والتسوية')
+                                    });
+                                  }}
+                                  className={`text-[10px] font-bold py-1 px-2.5 rounded-full cursor-pointer transition-all border ${
+                                    d.activeStatus === 'CLOSED' || d.activeStatus === 'INACTIVE' || d.isAvailable === false
+                                      ? 'bg-rose-950 text-rose-300 border-rose-500/50 hover:bg-rose-900'
+                                      : d.activeStatus === 'MAINTENANCE'
+                                      ? 'bg-amber-950 text-amber-300 border-amber-500/50 hover:bg-amber-900'
+                                      : d.activeStatus === 'FULL'
+                                      ? 'bg-purple-950 text-purple-300 border-purple-500/50 hover:bg-purple-900'
+                                      : 'bg-emerald-950 text-emerald-300 border-emerald-500/50 hover:bg-emerald-900'
+                                  }`}
+                                  title="اضغط للتبديل السريع بين (مفتوح ويعمل) و (مغلق ولا يعمل)"
+                                >
+                                  {d.activeStatus === 'CLOSED' || d.activeStatus === 'INACTIVE' || d.isAvailable === false
+                                    ? 'مغلق / لا يعمل ⛔'
+                                    : d.activeStatus === 'MAINTENANCE'
+                                    ? 'صيانة 🔧'
                                     : d.activeStatus === 'FULL'
-                                    ? 'bg-rose-900 text-rose-200'
-                                    : 'bg-emerald-950 text-emerald-300'
-                                }`}>
-                                  {d.activeStatus === 'MAINTENANCE' ? 'متوقف صيانة 🔧' : d.activeStatus === 'FULL' ? 'ممتلئ مغلق ⛔' : 'يعمل مفتوح ✅'}
-                                </span>
+                                    ? 'ممتلئ ⚠️'
+                                    : 'يعمل مفتوح ✅'}
+                                </button>
+                                {d.statusNote && (
+                                  <div className="text-[10px] text-rose-400 truncate max-w-[120px] mt-0.5" title={d.statusNote}>
+                                    {d.statusNote}
+                                  </div>
+                                )}
                               </td>
                               <td className="py-2 px-3 text-center">
                                 <div className="flex items-center justify-center gap-1.5">
@@ -1773,6 +1909,152 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB: PARKINGS MANAGEMENT */}
+              {activeTab === 'PARKINGS' && (
+                <div className="space-y-6">
+                  {/* Add Parking Location Form */}
+                  <form onSubmit={handleAddParking} className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl">
+                    <h4 className="text-sm font-bold text-amber-400 mb-3 flex items-center gap-2">
+                      <Plus className="w-4 h-4" /> إضافة موقع ركنة وتوقف جديد (Parking Bay)
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">اسم الموقف بالعربية</label>
+                        <input
+                          type="text"
+                          value={newParkingName}
+                          onChange={(e) => setNewParkingName(e.target.value)}
+                          placeholder="مثال: موقف الورشة المركزية"
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-100"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">الكود المختصر (إنجليزي)</label>
+                        <input
+                          type="text"
+                          value={newParkingCode}
+                          onChange={(e) => setNewParkingCode(e.target.value.toUpperCase())}
+                          placeholder="WORKSHOP-BAY-01"
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm font-mono text-center uppercase text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">المنطقة / القطاع بالمنجم</label>
+                        <input
+                          type="text"
+                          value={newParkingArea}
+                          onChange={(e) => setNewParkingArea(e.target.value)}
+                          placeholder="مثال: قطاع الورشة المركزية"
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-100"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">السعة الاستيعابية (دنابر)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          value={newParkingCapacity}
+                          onChange={(e) => setNewParkingCapacity(e.target.value)}
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm font-mono text-center text-slate-100"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <label className="text-xs text-slate-400 block mb-1">ملاحظات تشغيلية وإرشادات الركن (اختياري)</label>
+                      <input
+                        type="text"
+                        value={newParkingNotes}
+                        onChange={(e) => setNewParkingNotes(e.target.value)}
+                        placeholder="مثال: مخصص للدنابر الخاضعة للصيانة أو الفحص الدوري، مع التوقف عكسي"
+                        className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-100"
+                      />
+                    </div>
+
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="submit"
+                        className="py-2 px-5 rounded-lg font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" /> حفظ وإضافة وتعميم على جميع التابلتات والأجهزة
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Parkings List */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-bold text-slate-200">
+                        مواقف وأماكن ركنة الدنابر المعتمدة ({parkingLocations.length})
+                      </h4>
+                      <span className="text-xs text-amber-400 font-medium">
+                        تظهر هذه القائمة لحظياً لكل سائق عند إنهاء الوردية وتسليم المعدة
+                      </span>
+                    </div>
+
+                    <div className="border border-slate-800 rounded-xl overflow-hidden">
+                      <table className="w-full text-right text-xs">
+                        <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+                          <tr>
+                            <th className="py-2.5 px-3">الرمز</th>
+                            <th className="py-2.5 px-3">اسم الموقف بالعربية</th>
+                            <th className="py-2.5 px-3">الكود</th>
+                            <th className="py-2.5 px-3">المنطقة / الموقع</th>
+                            <th className="py-2.5 px-3 text-center">السعة</th>
+                            <th className="py-2.5 px-3 text-center">الحالة</th>
+                            <th className="py-2.5 px-3 text-center">إجراءات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-medium">
+                          {parkingLocations.map(p => (
+                            <tr key={p.id} className="hover:bg-slate-800/40 transition-colors">
+                              <td className="py-2 px-3 text-base">🅿️</td>
+                              <td className="py-2 px-3 text-slate-100 font-bold">{p.nameAr}</td>
+                              <td className="py-2 px-3 font-mono text-amber-400 font-bold">{p.code}</td>
+                              <td className="py-2 px-3 text-slate-300">{p.area || '-'}</td>
+                              <td className="py-2 px-3 font-mono text-center text-slate-300">{p.capacity || 10} دنابر</td>
+                              <td className="py-2 px-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleParkingActive(p.id)}
+                                  className={`py-1 px-2.5 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
+                                    p.active
+                                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'
+                                      : 'bg-slate-800 text-slate-500 border border-slate-700'
+                                  }`}
+                                >
+                                  {p.active ? 'متاح ومفعل 🟢' : 'معطل ومغلق ⚪'}
+                                </button>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <button
+                                    onClick={() => setEditingParking(p)}
+                                    className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-slate-800 rounded transition-colors cursor-pointer"
+                                    title="تعديل الموقف"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteParking(p.id)}
+                                    className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded transition-colors cursor-pointer"
+                                    title="حذف الموقف"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -2542,6 +2824,15 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
             onClose={() => setEditingDump(null)}
           />
         )}
+
+        {/* EDIT PARKING DIALOG */}
+        {editingParking && (
+          <ParkingEditDialog
+            parking={editingParking}
+            onSave={(updates) => handleSaveParkingEdit(editingParking.id, updates)}
+            onClose={() => setEditingParking(null)}
+          />
+        )}
       </div>
     </div>
   );
@@ -2707,6 +2998,8 @@ const ExcavatorEditDialog: React.FC<ExcavatorEditDialogProps> = ({ excavator, on
   const [benchLevel, setBenchLevel] = useState<string>(excavator.benchLevel);
   const [assignedMaterial, setAssignedMaterial] = useState<MaterialType>(excavator.assignedMaterial);
   const [model, setModel] = useState<string>(excavator.model);
+  const [isAvailable, setIsAvailable] = useState<boolean>(excavator.isAvailable !== false && excavator.status === 'ACTIVE');
+  const [statusNote, setStatusNote] = useState<string>(excavator.statusNote || '');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2715,6 +3008,8 @@ const ExcavatorEditDialog: React.FC<ExcavatorEditDialogProps> = ({ excavator, on
       benchLevel: benchLevel.trim(),
       assignedMaterial,
       model: model.trim(),
+      isAvailable,
+      statusNote: statusNote.trim() || undefined,
     });
   };
 
@@ -2735,29 +3030,62 @@ const ExcavatorEditDialog: React.FC<ExcavatorEditDialogProps> = ({ excavator, on
           </div>
           <div>
             <h3 className="text-base font-black text-slate-100">
-              تعديل بيانات ومنسوب الحفار {excavator.id}
+              تعديل بيانات وحالة الحفار {excavator.id}
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              تغيير المنسوب (RL)، نوع الخام، أو الحالة التشغيلية دون الحاجة لحذفه
+              تغيير المنسوب (RL)، نوع الخام، أو إيقاف المعدة مع توضيح السبب للسائقين
             </p>
           </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">
+                الحالة التشغيلية للحفار:
+              </label>
+              <select
+                value={status}
+                onChange={(e) => {
+                  const s = e.target.value as Excavator['status'];
+                  setStatus(s);
+                  setIsAvailable(s === 'ACTIVE');
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 text-xs font-bold focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="ACTIVE">شغال في التحميل (ACTIVE) ✅</option>
+                <option value="BREAKDOWN">عطل ميكانيكي / هيدروليكي (BREAKDOWN) ⛔</option>
+                <option value="MAINTENANCE">صيانة وتغيير أسنان الباكت (MAINTENANCE) 🔧</option>
+                <option value="STANDBY">ستاند باي / في الانتظار (STANDBY) ⏳</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">
+                إتاحة المعدة للسائقين:
+              </label>
+              <select
+                value={isAvailable ? 'TRUE' : 'FALSE'}
+                onChange={(e) => setIsAvailable(e.target.value === 'TRUE')}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 text-xs font-bold focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="TRUE">متاح ويعمل دون تحذير 🟢</option>
+                <option value="FALSE">لا يعمل / متوقف (يتطلب تحذير للسائق) ⛔</option>
+              </select>
+            </div>
+          </div>
+
           <div>
             <label className="text-xs font-bold text-slate-300 block mb-1">
-              الحالة التشغيلية للحفار:
+              سبب الإيقاف / ملاحظة عدم العمل (تظهر للسائقين مع التحذير):
             </label>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value as Excavator['status'])}
-              className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 text-xs font-bold focus:border-emerald-500 focus:outline-none"
-            >
-              <option value="ACTIVE">شغال في التحميل (ACTIVE) ✅</option>
-              <option value="BREAKDOWN">عطل ميكانيكي / هيدروليكي (BREAKDOWN) ⚠️</option>
-              <option value="MAINTENANCE">صيانة وتغيير أسنان الباكت (MAINTENANCE) 🔧</option>
-              <option value="STANDBY">ستاند باي / في الانتظار (STANDBY) ⏳</option>
-            </select>
+            <input
+              type="text"
+              value={statusNote}
+              onChange={(e) => setStatusNote(e.target.value)}
+              placeholder="مثال: عطل بستم الباكت الرئيسي - بانتظار ونش الصيانة"
+              className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-emerald-500 focus:outline-none"
+            />
           </div>
 
           <div>
@@ -2839,6 +3167,8 @@ const DumpEditDialog: React.FC<DumpEditDialogProps> = ({ dump, onSave, onClose }
   const [type, setType] = useState<DumpLocation['type']>(dump.type);
   const [targetMaterial, setTargetMaterial] = useState<MaterialType>(dump.targetMaterial);
   const [currentBenches, setCurrentBenches] = useState<string>(dump.currentBenches || '');
+  const [isAvailable, setIsAvailable] = useState<boolean>(dump.isAvailable !== false && dump.activeStatus === 'OPEN');
+  const [statusNote, setStatusNote] = useState<string>(dump.statusNote || '');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2848,6 +3178,8 @@ const DumpEditDialog: React.FC<DumpEditDialogProps> = ({ dump, onSave, onClose }
       type,
       targetMaterial,
       currentBenches: currentBenches.trim() || undefined,
+      isAvailable,
+      statusNote: statusNote.trim() || undefined,
     });
   };
 
@@ -2877,19 +3209,55 @@ const DumpEditDialog: React.FC<DumpEditDialogProps> = ({ dump, onSave, onClose }
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">
+                الحالة التشغيلية للموقع / الكسارة:
+              </label>
+              <select
+                value={activeStatus}
+                onChange={(e) => {
+                  const s = e.target.value as DumpLocation['activeStatus'];
+                  setActiveStatus(s);
+                  setIsAvailable(s === 'OPEN');
+                }}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 text-xs font-bold focus:border-amber-500 focus:outline-none"
+              >
+                <option value="OPEN">يعمل ومفتوح للتفريغ (OPEN) ✅</option>
+                <option value="CLOSED">مغلق تماماً (CLOSED) ⛔</option>
+                <option value="INACTIVE">لا يعمل / خارج الخدمة (INACTIVE) ⛔</option>
+                <option value="MAINTENANCE">متوقف للصيانة والتسوية (MAINTENANCE) 🔧</option>
+                <option value="FULL">ممتلئ ومغلق مؤقتاً (FULL) ⚠️</option>
+                <option value="CONGESTED">تكدس وزحام شديد (CONGESTED) ⏳</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">
+                إتاحة الموقع للسائقين:
+              </label>
+              <select
+                value={isAvailable ? 'TRUE' : 'FALSE'}
+                onChange={(e) => setIsAvailable(e.target.value === 'TRUE')}
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 text-xs font-bold focus:border-amber-500 focus:outline-none"
+              >
+                <option value="TRUE">متاح ويعمل دون تحذير 🟢</option>
+                <option value="FALSE">مغلق / لا يعمل (يتطلب تحذير للسائق) ⛔</option>
+              </select>
+            </div>
+          </div>
+
           <div>
             <label className="text-xs font-bold text-slate-300 block mb-1">
-              الحالة التشغيلية للموقع / الكسارة:
+              سبب الإغلاق / ملاحظة عدم العمل (تظهر للسائقين مع التحذير):
             </label>
-            <select
-              value={activeStatus}
-              onChange={(e) => setActiveStatus(e.target.value as DumpLocation['activeStatus'])}
-              className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 text-xs font-bold focus:border-amber-500 focus:outline-none"
-            >
-              <option value="OPEN">يعمل ومفتوح للتفريغ (OPEN) ✅</option>
-              <option value="MAINTENANCE">متوقف للصيانة والتسوية (MAINTENANCE) 🔧</option>
-              <option value="FULL">ممتلئ ومغلق مؤقتاً (FULL) ⛔</option>
-            </select>
+            <input
+              type="text"
+              value={statusNote}
+              onChange={(e) => setStatusNote(e.target.value)}
+              placeholder="مثال: الكسارة متوقفة لصيانة السير الناقل والمحرك"
+              className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+            />
           </div>
 
           <div>
@@ -2940,6 +3308,151 @@ const DumpEditDialog: React.FC<DumpEditDialogProps> = ({ dump, onSave, onClose }
               value={currentBenches}
               onChange={(e) => setCurrentBenches(e.target.value)}
               placeholder="مثال: الرامب الشمالي مفتوح، تسوية جارية"
+              className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+            <button
+              type="button"
+              onClick={onClose}
+              className="py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer"
+            >
+              إلغاء
+            </button>
+            <button
+              type="submit"
+              className="py-2 px-5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-lg transition-transform active:scale-98 cursor-pointer"
+            >
+              <Check className="w-4 h-4" />
+              <span>حفظ وتحديث ومزامنة فورية</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// -------------------------------------------------------------
+// Sub-Dialog 4: Parking Location Edit Dialog (Without Deleting)
+// -------------------------------------------------------------
+interface ParkingEditDialogProps {
+  parking: ParkingLocation;
+  onSave: (updates: Partial<ParkingLocation>) => void;
+  onClose: () => void;
+}
+
+const ParkingEditDialog: React.FC<ParkingEditDialogProps> = ({ parking, onSave, onClose }) => {
+  const [nameAr, setNameAr] = useState<string>(parking.nameAr);
+  const [code, setCode] = useState<string>(parking.code);
+  const [area, setArea] = useState<string>(parking.area || '');
+  const [capacity, setCapacity] = useState<number>(parking.capacity || 10);
+  const [active, setActive] = useState<boolean>(parking.active);
+  const [notes, setNotes] = useState<string>(parking.notes || '');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSave({
+      nameAr: nameAr.trim(),
+      code: code.trim().toUpperCase(),
+      area: area.trim() || undefined,
+      capacity: Number(capacity) || 10,
+      active,
+      notes: notes.trim() || undefined,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+      <div className="relative w-full max-w-lg bg-slate-900 border-2 border-amber-500 rounded-3xl p-6 shadow-2xl text-slate-100">
+        <button
+          onClick={onClose}
+          type="button"
+          className="absolute top-4 left-4 p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        <div className="flex items-center gap-3 mb-4 pb-3 border-b border-slate-800">
+          <div className="p-2.5 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40">
+            <MapPin className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-black text-slate-100">
+              تعديل بيانات موقع الركنة {parking.nameAr}
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              تحديث الكود أو السعة أو تفعيل وإيقاف الموقع للسائقين
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">اسم الموقف بالعربية:</label>
+              <input
+                type="text"
+                value={nameAr}
+                onChange={(e) => setNameAr(e.target.value)}
+                className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">الكود المختصر:</label>
+              <input
+                type="text"
+                value={code}
+                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs font-mono uppercase text-slate-100 focus:border-amber-500 focus:outline-none"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">المنطقة / الموقع:</label>
+              <input
+                type="text"
+                value={area}
+                onChange={(e) => setArea(e.target.value)}
+                className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-300 block mb-1">السعة (عدد الدنابر):</label>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={capacity}
+                onChange={(e) => setCapacity(Number(e.target.value))}
+                className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs font-mono text-slate-100 focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-slate-300 block mb-1">حالة الموقف وتوفره للسائقين:</label>
+            <select
+              value={active ? 'TRUE' : 'FALSE'}
+              onChange={(e) => setActive(e.target.value === 'TRUE')}
+              className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none font-bold"
+            >
+              <option value="TRUE">متاح ومفعل في شاشة تسليم الوردية 🟢</option>
+              <option value="FALSE">معطل ومغلق (لا يظهر للسائقين) ⚪</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-slate-300 block mb-1">ملاحظات تشغيلية:</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
               className="w-full py-2 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
             />
           </div>

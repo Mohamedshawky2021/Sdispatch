@@ -17,6 +17,7 @@ import {
   ProductionGapAlert,
   DriverSessionRecord,
   CustomStandbyReason,
+  ParkingLocation,
 } from '../types/dispatch';
 import {
   sendCloudDispatcherMessage,
@@ -69,6 +70,7 @@ const STORAGE_KEYS = {
   CUSTOM_STANDBY_REASONS: 'sukari_custom_standby_reasons_v2',
   CUSTOM_TRUCKS_ORDER: 'sukari_custom_trucks_order_v2',
   CUSTOM_EXCAVATORS_ORDER: 'sukari_custom_excavators_order_v2',
+  PARKINGS: 'sukari_parkings_v2',
 };
 
 export interface HourlyExportSnapshot {
@@ -1396,12 +1398,74 @@ export function endTruckFueling(truckId: string): FuelingLog | null {
   return advanceTruckFuelingStartLoading(truckId);
 }
 
+export interface ActiveStationTruck {
+  truckId: string;
+  driverName?: string;
+  driverCode?: string;
+  status: 'EN_ROUTE' | 'AT_STATION' | 'RETURNING' | 'IN_PROGRESS';
+  statusLabelAr: string;
+  startTime: string;
+  elapsedMinutes: number;
+}
+
 export function getActiveFuelingTrucks(): FuelingLog[] {
-  return getFuelingLogs().filter(f => f.status !== 'COMPLETED');
+  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  return getFuelingLogs().filter(
+    f => f.status !== 'COMPLETED' && (!f.startTime || new Date(f.startTime).getTime() >= cutoff)
+  );
 }
 
 export function getActiveFuelingForTruck(truckId: string): FuelingLog | undefined {
   return getFuelingLogs().find(f => f.truckId === truckId && f.status !== 'COMPLETED');
+}
+
+export function getActiveFuelingStationTrucks(): ActiveStationTruck[] {
+  const cutoff = Date.now() - 12 * 60 * 60 * 1000;
+  const fuelings = getFuelingLogs().filter(
+    f => f.status !== 'COMPLETED' && (!f.startTime || new Date(f.startTime).getTime() >= cutoff)
+  );
+  const trucks = getStoredTrucks();
+  const now = Date.now();
+
+  const map = new Map<string, ActiveStationTruck>();
+
+  fuelings.forEach(f => {
+    const startMs = f.startTime ? new Date(f.startTime).getTime() : now;
+    const elapsed = Math.max(0, Math.floor((now - startMs) / 60000));
+    let label = 'في الطريق للبنزينة ⛽';
+    if (f.status === 'AT_STATION') label = 'داخل البنزينة جاري التفويل ⛽';
+    else if (f.status === 'RETURNING') label = 'خرج من البنزينة وعائد 🚚';
+
+    map.set(f.truckId, {
+      truckId: f.truckId,
+      driverName: f.driverName,
+      driverCode: f.driverCode,
+      status: (f.status as any) || 'AT_STATION',
+      statusLabelAr: label,
+      startTime: f.startTime,
+      elapsedMinutes: elapsed,
+    });
+  });
+
+  // Also include any trucks in trucks list marked as FUELING if not already captured
+  trucks
+    .filter(t => t.status === 'FUELING')
+    .forEach(t => {
+      if (!map.has(t.id)) {
+        const startMs = t.lastStatusChange ? new Date(t.lastStatusChange).getTime() : now;
+        const elapsed = Math.max(0, Math.floor((now - startMs) / 60000));
+        map.set(t.id, {
+          truckId: t.id,
+          driverName: t.assignedDriver,
+          status: 'AT_STATION',
+          statusLabelAr: t.statusNote || 'في محطة الوقود ⛽',
+          startTime: t.lastStatusChange || new Date().toISOString(),
+          elapsedMinutes: elapsed,
+        });
+      }
+    });
+
+  return Array.from(map.values()).sort((a, b) => b.elapsedMinutes - a.elapsedMinutes);
 }
 
 // ==========================================
@@ -1469,7 +1533,12 @@ export function recordDriverLoginSession(driverCode: string, driverName: string,
   return newSession;
 }
 
-export function recordDriverLogoutSession(truckId: string, tripsCount: number, totalTonnes: number): DriverSessionRecord | null {
+export function recordDriverLogoutSession(
+  truckId: string,
+  tripsCount: number,
+  totalTonnes: number,
+  parkingLocation?: string
+): DriverSessionRecord | null {
   const current = getDriverSessions();
   const now = new Date();
   const nowIso = now.toISOString();
@@ -1486,6 +1555,7 @@ export function recordDriverLogoutSession(truckId: string, tripsCount: number, t
         totalDurationMinutes: durationMinutes,
         tripsCompleted: tripsCount,
         tonnesMoved: totalTonnes,
+        parkingLocation: parkingLocation || s.parkingLocation,
       };
       return closedSession;
     }
@@ -1496,12 +1566,29 @@ export function recordDriverLogoutSession(truckId: string, tripsCount: number, t
 
   if (closedSession) {
     syncDriverSessionToCloud(closedSession).catch(console.error);
+    const statusNote = parkingLocation ? `ركن في: ${parkingLocation} 🅿️` : 'تسليم الوردية وانصراف السائق';
     syncTruckLiveStateToCloud(truckId, {
       status: 'STANDBY_QUEUE',
       assignedDriver: '',
-      statusNote: 'تسليم الوردية وانصراف السائق',
+      statusNote,
+      lastParkingLocation: parkingLocation,
+      lastParkingTime: nowIso,
       lastStatusChange: nowIso,
     }).catch(console.error);
+
+    // Update local truck object
+    const trucks = getStoredTrucks();
+    const tIdx = trucks.findIndex(t => t.id === truckId);
+    if (tIdx >= 0) {
+      trucks[tIdx].status = 'STANDBY_QUEUE';
+      trucks[tIdx].assignedDriver = '';
+      trucks[tIdx].statusNote = statusNote;
+      trucks[tIdx].lastParkingLocation = parkingLocation;
+      trucks[tIdx].lastParkingTime = nowIso;
+      trucks[tIdx].lastStatusChange = nowIso;
+      localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(trucks));
+      broadcastDataChange('TRUCKS_UPDATED', trucks);
+    }
   }
 
   return closedSession;
@@ -1621,6 +1708,67 @@ export function deleteCustomStandbyReason(id: string) {
   const current = getCustomStandbyReasons();
   const updated = current.filter(r => r.id !== id);
   saveCustomStandbyReasons(updated);
+}
+
+// ==========================================
+// PARKING LOCATIONS MANAGEMENT (مواقف وركنات الدنابر)
+// ==========================================
+
+export const DEFAULT_PARKING_LOCATIONS: ParkingLocation[] = [
+  { id: 'PARK-01', code: 'P-WORKSHOP', nameAr: 'موقف الورشة المركزية (Workshop Main Parking)', area: 'الورشة المركزية', capacity: 15, active: true },
+  { id: 'PARK-02', code: 'P-FUEL', nameAr: 'ميدان محطة الوقود (Fueling Station Bay)', area: 'محطة التفويل', capacity: 8, active: true },
+  { id: 'PARK-03', code: 'P-NORTH-PIT', nameAr: 'ساحة الانتظار الشمالية (North Pit Staging)', area: 'North Pit RL +140', capacity: 12, active: true },
+  { id: 'PARK-04', code: 'P-SOUTH-PIT', nameAr: 'ساحة الانتظار الجنوبية (South Pit Staging)', area: 'South Pit RL +90', capacity: 10, active: true },
+  { id: 'PARK-05', code: 'P-CRUSHER', nameAr: 'موقف الكسارة الأولية (Crusher 01 Holding)', area: 'الكسارة الأولية', capacity: 6, active: true },
+  { id: 'PARK-06', code: 'P-SHIFT-CHANGE', nameAr: 'موقف استراحة وتبديل الوردية (Shift Change Lot)', area: 'مبنى الإدارة الميداني', capacity: 20, active: true },
+  { id: 'PARK-07', code: 'P-RAMP', nameAr: 'موقف رامب السكري الرئيسي (Main Haul Road Bay)', area: 'منحدر الرامب الرئيسي', capacity: 6, active: true },
+];
+
+export function getParkingLocations(): ParkingLocation[] {
+  if (typeof window === 'undefined') return DEFAULT_PARKING_LOCATIONS;
+  const raw = localStorage.getItem(STORAGE_KEYS.PARKINGS);
+  if (!raw) {
+    localStorage.setItem(STORAGE_KEYS.PARKINGS, JSON.stringify(DEFAULT_PARKING_LOCATIONS));
+    return DEFAULT_PARKING_LOCATIONS;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_PARKING_LOCATIONS;
+  } catch {
+    return DEFAULT_PARKING_LOCATIONS;
+  }
+}
+
+export function saveParkingLocations(parkings: ParkingLocation[]) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEYS.PARKINGS, JSON.stringify(parkings));
+  broadcastDataChange('PARKINGS_UPDATED', parkings);
+  syncMasterDataToCloud('parkings', parkings);
+}
+
+export function addParkingLocation(parking: Omit<ParkingLocation, 'id'>): ParkingLocation[] {
+  const current = getParkingLocations();
+  const newParking: ParkingLocation = {
+    ...parking,
+    id: `PARK-${Date.now().toString().slice(-6)}`,
+  };
+  const updated = [...current, newParking];
+  saveParkingLocations(updated);
+  return updated;
+}
+
+export function updateParkingLocation(id: string, updates: Partial<ParkingLocation>): ParkingLocation[] {
+  const current = getParkingLocations();
+  const updated = current.map(p => (p.id === id ? { ...p, ...updates } : p));
+  saveParkingLocations(updated);
+  return updated;
+}
+
+export function deleteParkingLocation(id: string): ParkingLocation[] {
+  const current = getParkingLocations();
+  const updated = current.filter(p => p.id !== id);
+  saveParkingLocations(updated);
+  return updated;
 }
 
 // ==========================================
@@ -2052,6 +2200,15 @@ export async function pullCloudMasterData(): Promise<{ success: boolean; syncedI
       syncedItems.push('equipment_alerts');
     }
 
+    try {
+      const parkings = await fetchMasterDataFromCloud('parkings');
+      if (parkings && Array.isArray(parkings) && parkings.length > 0) {
+        localStorage.setItem(STORAGE_KEYS.PARKINGS, JSON.stringify(parkings));
+        broadcastDataChange('PARKINGS_UPDATED', parkings);
+        syncedItems.push('parkings');
+      }
+    } catch {}
+
     return { success: true, syncedItems };
   } catch (err) {
     console.warn('Failed to pull master data from cloud:', err);
@@ -2081,6 +2238,7 @@ if (typeof window !== 'undefined') {
             tripsToday: Math.max(existing.tripsToday || 0, masterTruck.tripsToday || 0),
             tonnesToday: Math.max(existing.tonnesToday || 0, masterTruck.tonnesToday || 0),
             assignedDriver: existing.assignedDriver || masterTruck.assignedDriver,
+            lastParkingLocation: existing.lastParkingLocation || masterTruck.lastParkingLocation,
           };
         });
         localStorage.setItem(STORAGE_KEYS.TRUCKS, JSON.stringify(merged));
@@ -2097,6 +2255,9 @@ if (typeof window !== 'undefined') {
       } else if (docId === 'custom_standby_reasons' && Array.isArray(data) && data.length > 0) {
         localStorage.setItem(STORAGE_KEYS.CUSTOM_STANDBY_REASONS, JSON.stringify(data));
         broadcastDataChange('CUSTOM_STANDBY_REASONS_UPDATED', data);
+      } else if (docId === 'parkings' && Array.isArray(data) && data.length > 0) {
+        localStorage.setItem(STORAGE_KEYS.PARKINGS, JSON.stringify(data));
+        broadcastDataChange('PARKINGS_UPDATED', data);
       } else if (docId === 'app_config' && data) {
         localStorage.setItem(STORAGE_KEYS.CONFIG, JSON.stringify(data));
         broadcastDataChange('CONFIG_UPDATED', data);

@@ -26,6 +26,8 @@ import {
   Fuel,
   Radio,
   FileSpreadsheet,
+  MapPin,
+  AlertOctagon,
 } from 'lucide-react';
 import {
   Driver,
@@ -38,6 +40,7 @@ import {
   ShiftHandoverRecord,
   FuelingLog,
   DispatcherDirectMessage,
+  ParkingLocation,
 } from '../types/dispatch';
 import {
   playClickSound,
@@ -74,6 +77,9 @@ import {
   getCustomStandbyReasons,
   recordStandbyStart,
   recordStandbyEnd,
+  getActiveFuelingStationTrucks,
+  ActiveStationTruck,
+  getParkingLocations,
 } from '../utils/storage';
 import { useBatteryStatus } from '../hooks/useBatteryStatus';
 import { triggerBackgroundSheetsSync } from '../utils/googleSheets';
@@ -91,6 +97,8 @@ import {
   cancelEmergencySos,
   subscribeToTruckActiveSos,
   EmergencySosAlert,
+  subscribeToCloudFuelings,
+  subscribeToFleetTrucks,
 } from '../utils/firebaseSync';
 
 interface Props {
@@ -311,6 +319,24 @@ export const DriverInCab: React.FC<Props> = ({
   // Distinct Standby Cloud Event Tracking ID
   const [currentStandbyId, setCurrentStandbyId] = useState<string | null>(null);
 
+  // 1. Real-time Fueling Station Occupancy across all devices
+  const [activeStationTrucks, setActiveStationTrucks] = useState<ActiveStationTruck[]>(getActiveFuelingStationTrucks());
+  const [showStationTrucksModal, setShowStationTrucksModal] = useState(false);
+
+  // 2. Equipment & Dump Inactive/Out-of-Service Warning Confirmation Modal
+  const [warningTarget, setWarningTarget] = useState<{
+    type: 'EXCAVATOR' | 'DUMP';
+    id: string;
+    nameAr: string;
+    statusNote: string;
+    isRecommended?: boolean;
+  } | null>(null);
+
+  // 3. Parking Locations for Driver Logout Handover
+  const [parkingLocationsList, setParkingLocationsList] = useState<ParkingLocation[]>(getParkingLocations());
+  const [selectedParkingId, setSelectedParkingId] = useState<string>('PARK-01');
+  const [logoutParkingNotes, setLogoutParkingNotes] = useState<string>('');
+
   const showAlert = (text: string, type: 'SUCCESS' | 'WARNING' | 'INFO' = 'SUCCESS') => {
     setAlertMessage({ text, type });
     setTimeout(() => setAlertMessage(null), 4000);
@@ -511,6 +537,55 @@ export const DriverInCab: React.FC<Props> = ({
       stopContinuousSosAlarm();
     };
   }, [currentTruck?.id]);
+
+  // -------------------------------------------------------------
+  // REAL-TIME FLEET FUELING STATION & PARKING OCCUPANCY LISTENER (Across ALL Devices & Tablets)
+  // -------------------------------------------------------------
+  useEffect(() => {
+    const refreshStation = () => {
+      setActiveStationTrucks(getActiveFuelingStationTrucks());
+    };
+    const refreshParkings = () => {
+      setParkingLocationsList(getParkingLocations());
+    };
+
+    refreshStation();
+    refreshParkings();
+
+    // 1. Direct Firestore cloud listener on fleet_fuelings for multi-device sync
+    const unsubCloudFuel = subscribeToCloudFuelings((cloudFuelings) => {
+      if (cloudFuelings) {
+        refreshStation();
+      }
+    });
+
+    // 2. Direct Firestore fleet trucks live state listener
+    const unsubTrucks = subscribeToFleetTrucks((trucksMap) => {
+      if (trucksMap) {
+        refreshStation();
+      }
+    });
+
+    // 3. Local storage & cross-tab events
+    const unsubLocal = subscribeToDataChanges((event) => {
+      if (event.type === 'FUELING_LOGS_UPDATED' || event.type === 'TRUCKS_UPDATED') {
+        refreshStation();
+      }
+      if (event.type === 'PARKINGS_UPDATED') {
+        refreshParkings();
+      }
+    });
+
+    // 4. Polling ticker every 3s to keep elapsed minutes fresh
+    const interval = setInterval(refreshStation, 3000);
+
+    return () => {
+      unsubCloudFuel();
+      unsubTrucks();
+      unsubLocal();
+      clearInterval(interval);
+    };
+  }, []);
 
   const handleTriggerSosEmergency = async () => {
     if (!currentTruck || !currentDriver) {
@@ -798,9 +873,59 @@ export const DriverInCab: React.FC<Props> = ({
   };
 
   // -------------------------------------------------------------
+  // EQUIPMENT & DUMP STATUS / AVAILABILITY HELPERS
+  // -------------------------------------------------------------
+  const isExcavatorInactive = (ex: Excavator) => {
+    return ex.status !== 'ACTIVE' || ex.isAvailable === false;
+  };
+
+  const getExcavatorStatusLabel = (ex: Excavator) => {
+    if (ex.statusNote) return ex.statusNote;
+    switch (ex.status) {
+      case 'BREAKDOWN': return 'عطل فني / هيدروليك 🚨';
+      case 'MAINTENANCE': return 'صيانة دورية / تزييت 🔧';
+      case 'STANDBY_QUEUE': return 'متوقف / استاند باي ⏳';
+      case 'BLASTING_WAIT': return 'متوقف لأعمال التفجير 💥';
+      default: return 'لا يعمل / غير متاح ⛔';
+    }
+  };
+
+  const isDumpInactive = (dump: DumpLocation) => {
+    return dump.activeStatus !== 'OPEN' || dump.isAvailable === false;
+  };
+
+  const getDumpStatusLabel = (dump: DumpLocation) => {
+    if (dump.statusNote) return dump.statusNote;
+    switch (dump.activeStatus) {
+      case 'CLOSED': return 'مغلق تماماً ⛔';
+      case 'INACTIVE': return 'لا يعمل / خارج الخدمة ⛔';
+      case 'MAINTENANCE': return 'صيانة وتسوية بالجريدر 🚜';
+      case 'FULL': return 'المقلب ممتلئ ⚠️';
+      case 'CONGESTED': return 'تكدس وزحام شديد ⏳';
+      default: return 'لا يعمل / غير متاح ⛔';
+    }
+  };
+
+  // -------------------------------------------------------------
   // STEP 1: Select Excavator / Shovel / Loader / Others
   // -------------------------------------------------------------
   const handleSelectExcavator = (exId: string) => {
+    const ex = excavators.find(e => e.id === exId);
+    if (ex && isExcavatorInactive(ex)) {
+      setWarningTarget({
+        type: 'EXCAVATOR',
+        id: ex.id,
+        nameAr: ex.id,
+        statusNote: getExcavatorStatusLabel(ex),
+      });
+      playDispatchAlertSound();
+      return;
+    }
+    proceedWithExcavator(exId);
+  };
+
+  const proceedWithExcavator = (exId: string) => {
+    setWarningTarget(null);
     if (isStandby) {
       stopStandby();
     }
@@ -837,6 +962,22 @@ export const DriverInCab: React.FC<Props> = ({
   // STEP 3: Select Dump Location & Finalize Trip (152 tonnes payload)
   // -------------------------------------------------------------
   const handleSelectDump = (dumpCode: string) => {
+    const dump = dumps.find(d => d.id === dumpCode);
+    if (dump && isDumpInactive(dump)) {
+      setWarningTarget({
+        type: 'DUMP',
+        id: dump.id,
+        nameAr: dump.nameAr,
+        statusNote: getDumpStatusLabel(dump),
+      });
+      playDispatchAlertSound();
+      return;
+    }
+    proceedWithDump(dumpCode);
+  };
+
+  const proceedWithDump = (dumpCode: string) => {
+    setWarningTarget(null);
     if (!activeTripDraft || !activeTripDraft.material || !currentDriver || !currentTruck) return;
 
     const dumpTime = new Date();
@@ -906,6 +1047,10 @@ export const DriverInCab: React.FC<Props> = ({
     }
 
     const endTime = new Date();
+    const selectedParking =
+      parkingLocationsList.find(p => p.id === selectedParkingId) || parkingLocationsList[0];
+    const parkingName = selectedParking ? selectedParking.nameAr : 'موقف الورشة المركزية';
+
     const handoverRecord: ShiftHandoverRecord = {
       id: `HANDOVER-${Date.now().toString().slice(-6)}`,
       driverCode: currentDriver.code,
@@ -917,6 +1062,9 @@ export const DriverInCab: React.FC<Props> = ({
       tripsCount: tripsCount,
       totalTonnes: totalTonnesHauled,
       standbySeconds: accumulatedStandbySeconds,
+      parkingLocationId: selectedParking?.id || 'PARK-01',
+      parkingLocationName: parkingName,
+      notes: logoutParkingNotes ? `ركن في ${parkingName}: ${logoutParkingNotes}` : `ركن في ${parkingName}`,
       synced: typeof navigator !== 'undefined' ? navigator.onLine : true,
     };
 
@@ -932,11 +1080,11 @@ export const DriverInCab: React.FC<Props> = ({
       releaseEquipmentSession(currentTruck.id);
     }
 
+    // Record driver logout in attendance session tracking with parking location
+    recordDriverLogoutSession(currentTruck.id, tripsCount, totalTonnesHauled, parkingName);
+
     // Trigger Google Sheets sync upon shift logout
     triggerBackgroundSheetsSync();
-
-    // Record driver logout in attendance session tracking
-    recordDriverLogoutSession(currentTruck.id, tripsCount, totalTonnesHauled);
 
     playClickSound();
     setShowLogoutModal(false);
@@ -949,13 +1097,13 @@ export const DriverInCab: React.FC<Props> = ({
     setAccumulatedStandbySeconds(0);
     setIsStandby(false);
     setActiveTripDraft(null);
+    setLogoutParkingNotes('');
     setCurrentScreen('LOGIN');
 
-    if (saveResult.syncedImmediately) {
-      showAlert('تم حفظ بيانات الوردية وتسليم المعدة بنجاح، وتوثيق سجل الحضور والانصراف ✅', 'SUCCESS');
-    } else {
-      showAlert('تم حفظ بيانات الوردية محلياً على التابلت بنجاح ✅', 'INFO');
-    }
+    showAlert(
+      `تم تسليم الوردية وتوثيق ركنة الدنبر في (${parkingName}) ومزامنة البيانات أوتوماتيكياً مع Google Sheets والأدمن ✅`,
+      'SUCCESS'
+    );
   };
 
   const formatSeconds = (sec: number) => {
@@ -1110,6 +1258,28 @@ export const DriverInCab: React.FC<Props> = ({
               </div>
               <div className="text-[10px] text-slate-400 font-medium">الإرسال القادم</div>
             </div>
+
+            {/* Real-time Fuel Station Occupancy Card */}
+            <button
+              type="button"
+              onClick={() => setShowStationTrucksModal(true)}
+              className={`border py-1.5 px-2.5 rounded-xl text-center min-w-[75px] cursor-pointer transition-colors ${
+                activeStationTrucks.length === 0
+                  ? 'bg-slate-950/80 border-slate-800 hover:border-emerald-500/40 text-emerald-400'
+                  : activeStationTrucks.length <= 2
+                  ? 'bg-amber-950/60 border-amber-500/50 text-amber-300'
+                  : 'bg-rose-950/80 border-rose-500/70 text-rose-300 animate-pulse'
+              }`}
+              title="عدد الدنابر المتواجدة حالياً في محطة الوقود (اضغط لعرض التفاصيل)"
+            >
+              <div className="text-base md:text-lg font-black font-mono tabular-nums flex items-center justify-center gap-1">
+                <span>⛽</span>
+                <span>{activeStationTrucks.length}</span>
+              </div>
+              <div className="text-[9px] text-slate-400 font-bold">
+                {activeStationTrucks.length === 0 ? 'البنزينة فاضية' : 'في البنزينة'}
+              </div>
+            </button>
 
             {/* Driver Google Sheets Sync Button */}
             <button
@@ -1418,6 +1588,29 @@ export const DriverInCab: React.FC<Props> = ({
                   <span>{isSyncingSheets ? 'جاري التحديث...' : 'مزامنة Google Sheets 📊'}</span>
                 </button>
               </div>
+
+              {/* Real-time Fuel Station info on login */}
+              <div className="mt-2.5 pt-2.5 border-t border-slate-800/80 flex items-center justify-between">
+                <span className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <Fuel className="w-3.5 h-3.5 text-sky-400" />
+                  <span>حالة محطة الوقود حالياً:</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowStationTrucksModal(true)}
+                  className={`py-1 px-2.5 rounded-lg text-xs font-mono font-bold border transition-colors cursor-pointer ${
+                    activeStationTrucks.length === 0
+                      ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
+                      : activeStationTrucks.length <= 2
+                      ? 'bg-amber-950/80 text-amber-300 border-amber-500/40'
+                      : 'bg-rose-950/80 text-rose-300 border-rose-500/50 animate-pulse'
+                  }`}
+                >
+                  {activeStationTrucks.length === 0
+                    ? 'خالية (0 دنابر) 🟢'
+                    : `${activeStationTrucks.length} ${activeStationTrucks.length === 1 ? 'دنبر' : 'دنابر'} بالبنزينة ⛽`}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1476,7 +1669,16 @@ export const DriverInCab: React.FC<Props> = ({
             >
               <Fuel className="w-4 h-4 shrink-0" />
               {!isFueling || !activeFueling || activeFueling.status === 'COMPLETED' ? (
-                <span>⛽ 1. رايح أفول</span>
+                <span className="flex items-center gap-1.5 flex-wrap justify-center">
+                  <span>⛽ رايح أفول</span>
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                    activeStationTrucks.length > 0
+                      ? 'bg-amber-400 text-slate-950 animate-pulse'
+                      : 'bg-sky-900/80 text-sky-200 border border-sky-400/30'
+                  }`}>
+                    {activeStationTrucks.length} بالبنزينة
+                  </span>
+                </span>
               ) : activeFueling.status === 'EN_ROUTE' ? (
                 <span>⛽ 2. وصلت البنزينة ({formatSeconds(fuelingElapsedSeconds)})</span>
               ) : activeFueling.status === 'AT_STATION' ? (
@@ -1534,6 +1736,45 @@ export const DriverInCab: React.FC<Props> = ({
             )}
           </div>
 
+          {/* REAL-TIME FUEL STATION OCCUPANCY BAR (Clickable to view trucks at fuel station) */}
+          <button
+            type="button"
+            onClick={() => {
+              playClickSound();
+              setShowStationTrucksModal(true);
+            }}
+            className="mb-3.5 w-full p-2.5 px-3.5 rounded-2xl bg-gradient-to-r from-sky-950/90 via-slate-900 to-slate-950 border border-sky-500/40 hover:border-sky-400 flex items-center justify-between gap-3 text-right cursor-pointer transition-all hover:bg-slate-900 shadow-md"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-400 shrink-0 font-bold">
+                <Fuel className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-black text-slate-100 flex items-center gap-1.5 flex-wrap">
+                  <span>محطة الوقود الحالية:</span>
+                  <span className="text-amber-400 font-bold">
+                    {activeStationTrucks.length === 0
+                      ? 'لا توجد دنابر في البنزينة حالياً (المحطة فارغة ومتاحة)'
+                      : `يوجد الآن ${activeStationTrucks.length} دنابر تفول بالبنزينة`}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-400 truncate">
+                  اضغط هنا لعرض تفاصيل وأرقام الدنابر المتواجدة في البنزينة لحظياً عبر كل الأجهزة
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className={`px-2 py-1 rounded-xl text-xs font-mono font-black border ${
+                activeStationTrucks.length > 0
+                  ? 'bg-amber-500 text-slate-950 border-amber-300 animate-pulse'
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
+              }`}>
+                ⛽ {activeStationTrucks.length}
+              </span>
+            </div>
+          </button>
+
           {/* Section Heading */}
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm md:text-base font-bold text-slate-200 flex items-center gap-2">
@@ -1545,30 +1786,43 @@ export const DriverInCab: React.FC<Props> = ({
             </span>
           </div>
 
-          {/* EXCAVATOR & SHOVEL GRID - Big, Prominent, Clear Numbers */}
+          {/* EXCAVATOR & SHOVEL GRID - Big, Prominent, Clear Numbers with Inactive Warnings */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 flex-1 pb-4">
             {excavators.map((ex) => {
               const isShovel = ex.id.startsWith('SH');
               const isLoader = ex.id.startsWith('WL');
               const isOthers = ex.id === 'Others';
               const typeLabel = isOthers ? 'تحميل آخر' : isShovel ? 'شوڤل' : isLoader ? 'لودر' : 'حفار';
+              const inactive = isExcavatorInactive(ex);
+              const statusLabel = getExcavatorStatusLabel(ex);
 
               return (
                 <button
                   key={ex.id}
                   onClick={() => handleSelectExcavator(ex.id)}
-                  className={`group p-4 md:p-5 rounded-2xl border-2 text-center flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer min-h-[110px] transition-all ${
-                    isOthers
+                  className={`group p-4 md:p-5 rounded-2xl border-2 text-center flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer min-h-[115px] transition-all relative overflow-hidden ${
+                    inactive
+                      ? 'bg-rose-950/40 border-rose-500/80 hover:border-rose-400 hover:bg-rose-900/50'
+                      : isOthers
                       ? 'bg-slate-900 border-amber-500/80 hover:border-amber-400 hover:bg-amber-950/30'
                       : 'bg-slate-900 border-emerald-500/50 hover:border-emerald-400 hover:bg-slate-800/90'
                   }`}
                 >
+                  {inactive && (
+                    <div className="absolute top-1.5 right-1.5 left-1.5 py-0.5 px-1 rounded-md bg-rose-600 text-white text-[10px] font-black tracking-tight flex items-center justify-center gap-1 shadow">
+                      <AlertOctagon className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{statusLabel}</span>
+                    </div>
+                  )}
+
                   {/* Big Massive Number */}
-                  <div className="text-2xl md:text-3xl font-black text-slate-50 font-mono tracking-wider group-hover:scale-105 transition-transform mb-1">
+                  <div className={`text-2xl md:text-3xl font-black font-mono tracking-wider group-hover:scale-105 transition-transform mb-1 ${
+                    inactive ? 'text-rose-200 line-through opacity-85 mt-3' : 'text-slate-50'
+                  }`}>
                     {ex.id}
                   </div>
-                  <div className={`text-xs font-bold ${isOthers ? 'text-amber-400' : 'text-emerald-400'}`}>
-                    {typeLabel}
+                  <div className={`text-xs font-bold ${inactive ? 'text-rose-400' : isOthers ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {inactive ? '⚠️ اضغط للتفاصيل' : typeLabel}
                   </div>
                 </button>
               );
@@ -1713,36 +1967,55 @@ export const DriverInCab: React.FC<Props> = ({
           {/* DUMP LOCATION GRID */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 md:gap-4 flex-1 pb-4">
             {dumps.map((d) => {
+              const inactive = isDumpInactive(d);
+              const statusLabel = getDumpStatusLabel(d);
               const isRecommended =
-                (activeTripDraft.material === 'WASTE' && (d.id.includes('DUMP') || d.type === 'WASTE_DUMP')) ||
-                (activeTripDraft.material === 'SUB_GRADE' && (d.id.includes('LEACH') || d.id.includes('ROM') || d.type === 'LEACH_PAD' || d.type === 'ROM_PAD')) ||
-                (activeTripDraft.material !== 'WASTE' && activeTripDraft.material !== 'SUB_GRADE' && (d.id.includes('CRUSHER') || d.id.includes('ROM') || d.type === 'CRUSHER' || d.type === 'ROM_PAD'));
+                !inactive && (
+                  (activeTripDraft.material === 'WASTE' && (d.id.includes('DUMP') || d.type === 'WASTE_DUMP')) ||
+                  (activeTripDraft.material === 'SUB_GRADE' && (d.id.includes('LEACH') || d.id.includes('ROM') || d.type === 'LEACH_PAD' || d.type === 'ROM_PAD')) ||
+                  (activeTripDraft.material !== 'WASTE' && activeTripDraft.material !== 'SUB_GRADE' && (d.id.includes('CRUSHER') || d.id.includes('ROM') || d.type === 'CRUSHER' || d.type === 'ROM_PAD'))
+                );
 
               return (
                 <button
                   key={d.id}
                   onClick={() => handleSelectDump(d.id)}
-                  className={`group p-4 md:p-5 rounded-2xl border-2 text-center flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer min-h-[120px] transition-all ${
-                    isRecommended
+                  className={`group p-4 md:p-5 rounded-2xl border-2 text-center flex flex-col items-center justify-center shadow-lg active:scale-95 cursor-pointer min-h-[120px] transition-all relative overflow-hidden ${
+                    inactive
+                      ? 'bg-rose-950/40 border-rose-500/80 hover:border-rose-400 hover:bg-rose-900/50'
+                      : isRecommended
                       ? 'bg-slate-900 border-rose-500/70 hover:border-rose-400 hover:bg-rose-950/20 ring-1 ring-rose-500/30'
                       : 'bg-slate-900 border-slate-800 hover:border-slate-700 hover:bg-slate-800/80'
                   }`}
                 >
-                  <div className="text-3xl mb-1.5 group-hover:scale-110 transition-transform">
+                  {inactive && (
+                    <div className="absolute top-1.5 right-1.5 left-1.5 py-0.5 px-1 rounded-md bg-rose-600 text-white text-[10px] font-black flex items-center justify-center gap-1 shadow">
+                      <AlertOctagon className="w-3 h-3 shrink-0" />
+                      <span className="truncate">{statusLabel}</span>
+                    </div>
+                  )}
+
+                  <div className={`text-3xl mb-1.5 group-hover:scale-110 transition-transform ${inactive ? 'mt-3 opacity-75' : ''}`}>
                     {d.type === 'CRUSHER' ? '⚙️' : d.type === 'ROM_PAD' ? '🟡' : '⛰️'}
                   </div>
 
-                  <div className="text-base md:text-lg font-black text-slate-100 font-mono tracking-wide">
+                  <div className={`text-base md:text-lg font-black font-mono tracking-wide ${inactive ? 'text-rose-200 line-through' : 'text-slate-100'}`}>
                     {d.id}
                   </div>
 
-                  <div className="text-xs text-rose-300 font-medium mt-0.5">
+                  <div className={`text-xs font-medium mt-0.5 ${inactive ? 'text-rose-400' : 'text-rose-300'}`}>
                     {d.nameAr}
                   </div>
 
-                  {isRecommended && (
+                  {isRecommended && !inactive && (
                     <span className="mt-2 py-0.5 px-2 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30">
                       ⭐ موصى به لهذا الخام
+                    </span>
+                  )}
+
+                  {inactive && (
+                    <span className="mt-1 text-[10px] text-rose-300 font-bold bg-rose-950/80 px-2 py-0.5 rounded-full border border-rose-500/40">
+                      ⚠️ يتطلب تأكيد اختياره
                     </span>
                   )}
                 </button>
@@ -1870,72 +2143,328 @@ export const DriverInCab: React.FC<Props> = ({
       {/* LOGOUT CONFIRMATION & SHIFT HANDOVER MODAL */}
       {/* Guarantees reliable saving locally on tablet & auto-sync when online */}
       {/* ============================================================= */}
+      {/* ============================================================= */}
+      {/* SCREEN: DEDICATED SHIFT LOGOUT & PARKING LOCATION SELECTION */}
+      {/* Linked to Admin Parkings Master List & Synced to Google Sheets & Firestore */}
+      {/* ============================================================= */}
       {showLogoutModal && currentDriver && currentTruck && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border-2 border-rose-500 rounded-3xl max-w-md w-full p-6 shadow-2xl animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2.5 text-rose-400 font-black text-lg">
-                <LogOut className="w-6 h-6" />
-                <span>إنهاء الوردية وتسليم المعدة</span>
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 md:p-6 overflow-y-auto animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-amber-500/80 rounded-3xl max-w-2xl w-full p-5 md:p-7 shadow-2xl animate-in zoom-in-95 duration-200 my-auto text-slate-100">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-black">
+                  <MapPin className="w-6 h-6 animate-bounce" />
+                </div>
+                <div>
+                  <h3 className="text-lg md:text-xl font-black text-slate-100 flex items-center gap-2">
+                    <span>تسليم الوردية — أين سيركن الدنبر؟</span>
+                    <span className="font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-lg border border-amber-500/30 text-sm">
+                      {currentTruck.id}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    اختر موقع ركنة وتوقف الدنبر لتسليم العهدة وتحديث بيانات غرفة التحكم وجوجل شيت لحظياً
+                  </p>
+                </div>
               </div>
+
               <button
+                type="button"
                 onClick={() => setShowLogoutModal(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <p className="text-xs text-slate-300 mb-4">
-              عند تأكيد الخروج، سيتم توثيق تقرير إنتاجية الوردية وحفظه تلقائياً في ذاكرة التابلت، ومزامنة البيانات فور توفر الإنترنت:
-            </p>
-
-            {/* Handover Summary Box */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 mb-5">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-400">السائق:</span>
-                <strong className="text-slate-100">{currentDriver.name} ({currentDriver.code})</strong>
+            {/* Shift Production Summary Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4 p-3 bg-slate-950 rounded-2xl border border-slate-800 text-center">
+              <div>
+                <span className="text-[10px] text-slate-400 block">السائق</span>
+                <strong className="text-xs text-slate-200 truncate block">{currentDriver.name}</strong>
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-400">رقم الدنبر:</span>
-                <strong className="font-mono text-amber-400">{currentTruck.id}</strong>
+              <div>
+                <span className="text-[10px] text-slate-400 block">عدد النقلات</span>
+                <strong className="text-xs font-mono text-emerald-400 font-black">{tripsCount} نقلة</strong>
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-400">إجمالي الحمولات:</span>
-                <strong className="font-mono text-emerald-400">{tripsCount} نقلة</strong>
+              <div>
+                <span className="text-[10px] text-slate-400 block">الحمولة الإجمالية</span>
+                <strong className="text-xs font-mono text-white font-black">{totalTonnesHauled} طن</strong>
               </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-400">إجمالي الأطنان المنقولة (152t):</span>
-                <strong className="font-mono text-white">{totalTonnesHauled} طن</strong>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-400">أوقات الانتظار:</span>
-                <strong className="font-mono text-purple-400">{formatSeconds(accumulatedStandbySeconds)}</strong>
-              </div>
-              <div className="flex justify-between text-xs pt-1.5 border-t border-slate-800">
-                <span className="text-slate-400">حالة المزامنة والشبكة:</span>
-                <span className={`font-bold flex items-center gap-1 ${isOnline ? 'text-emerald-400' : 'text-amber-400'}`}>
-                  {isOnline ? '🟢 متصل - إرسال فوري' : '🟡 أوفلاين - حفظ محلي بالتابلت'}
-                </span>
+              <div>
+                <span className="text-[10px] text-slate-400 block">زمن الانتظار</span>
+                <strong className="text-xs font-mono text-purple-400">{formatSeconds(accumulatedStandbySeconds)}</strong>
               </div>
             </div>
 
+            {/* Parking Location Selection Grid */}
+            <div className="mb-4">
+              <label className="text-xs font-bold text-amber-300 flex items-center justify-between mb-2">
+                <span className="flex items-center gap-1.5">
+                  <MapPin className="w-4 h-4 text-amber-400" />
+                  <span>اختر مكان ركنة الدنبر الآن ({parkingLocationsList.filter(p => p.active).length} موقع متاح):</span>
+                </span>
+                <span className="text-[11px] text-slate-400 font-normal">مربوطة بقائمة مواقف الأدمن المركزية</span>
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto p-1 border border-slate-800 rounded-2xl bg-slate-950/60">
+                {parkingLocationsList
+                  .filter(p => p.active)
+                  .map((p) => {
+                    const isSelected = selectedParkingId === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedParkingId(p.id);
+                          playClickSound();
+                        }}
+                        className={`p-3 rounded-xl border-2 text-right transition-all flex items-center justify-between gap-2.5 cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500/15 border-amber-500 text-amber-100 ring-2 ring-amber-400/40 shadow-lg'
+                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-800/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm shrink-0 ${
+                            isSelected ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            🅿️
+                          </span>
+                          <div className="min-w-0 truncate">
+                            <div className="text-xs font-black truncate">{p.nameAr}</div>
+                            <div className="text-[10px] text-slate-400 truncate flex items-center gap-1.5 mt-0.5">
+                              <span className="font-mono text-amber-400/80">{p.code}</span>
+                              {p.area && <span>• {p.area}</span>}
+                            </div>
+                          </div>
+                        </div>
+
+                        {isSelected ? (
+                          <div className="w-6 h-6 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center shrink-0">
+                            <Check className="w-4 h-4 stroke-[3]" />
+                          </div>
+                        ) : (
+                          <div className="w-5 h-5 rounded-full border border-slate-700 shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+
+            {/* Optional Driver Notes on Parking Condition */}
+            <div className="mb-5">
+              <label className="text-xs font-bold text-slate-300 block mb-1">
+                ملاحظات عند ركن المعدة (اختياري - كحالة الدنبر أو طلب بنزينة أو صيانة للوردية التالية):
+              </label>
+              <input
+                type="text"
+                value={logoutParkingNotes}
+                onChange={(e) => setLogoutParkingNotes(e.target.value)}
+                placeholder="مثال: تم إيقاف الدنبر أمام الباي 2، مستوى الجاز 40%، يحتاج فحص هواء إطار خلفي"
+                className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Network / Real-time sync guarantee */}
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 mb-5 flex items-center justify-between text-xs">
+              <span className="text-slate-400">المزامنة المركزية:</span>
+              <span className="font-bold text-emerald-400 flex items-center gap-1">
+                <span>⚡ مزامنة فورية مع لوحة تحكم الأدمن وملف Google Sheet الرسمي</span>
+              </span>
+            </div>
+
+            {/* Action Buttons */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
                 onClick={handleConfirmLogout}
-                className="w-full py-3.5 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-sm transition-colors shadow-lg shadow-rose-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white font-black text-sm transition-all shadow-xl shadow-rose-900/40 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
               >
-                <Check className="w-4 h-4" />
-                <span>تأكيد الخروج والتسليم</span>
+                <Check className="w-5 h-5" />
+                <span>تأكيد موقع الركنة وإنهاء الوردية</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setShowLogoutModal(false)}
-                className="w-full py-3.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm transition-colors cursor-pointer"
+                className="w-full py-3.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm transition-colors cursor-pointer border border-slate-700"
               >
-                <span>متابعة العمل بالوردية</span>
+                <span>الرجوع ومتابعة العمل بالوردية</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================= */}
+      {/* WARNING MODAL: OUT-OF-SERVICE / INACTIVE EQUIPMENT OR DUMP */}
+      {/* Allows Driver to Confirm Proceeding ("موافق") or Go Back ("رجوع") */}
+      {/* ============================================================= */}
+      {warningTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-gradient-to-b from-rose-950 via-slate-900 to-slate-950 border-4 border-rose-500 rounded-3xl max-w-md w-full p-6 shadow-2xl text-slate-100 text-center animate-in zoom-in-95 duration-200">
+            <div className="w-20 h-20 rounded-full bg-rose-600/30 border-4 border-rose-500 flex items-center justify-center mx-auto mb-4 text-4xl animate-bounce">
+              ⛔
+            </div>
+
+            <div className="inline-block px-3 py-1 rounded-full bg-rose-600 text-white text-xs font-black uppercase tracking-wider mb-2">
+              تنبيه وتحذير تشغيلي هام
+            </div>
+
+            <h3 className="text-xl font-black text-rose-300 mb-1">
+              {warningTarget.type === 'EXCAVATOR'
+                ? `معدة التحميل ${warningTarget.id} متوقفة ولا تعمل`
+                : `موقع التفريغ ${warningTarget.id} مغلق / لا يعمل`}
+            </h3>
+
+            <div className="p-3 rounded-2xl bg-slate-950/90 border border-rose-500/40 my-3 text-right space-y-1.5">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-400">الاسم / الكود:</span>
+                <strong className="text-white font-mono text-sm">{warningTarget.id} - {warningTarget.nameAr}</strong>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-400">السبب / الحالة المسجلة:</span>
+                <strong className="text-rose-400 font-bold">{warningTarget.statusNote}</strong>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed mb-5">
+              تم تغيير حالة هذه المعدة / الموقع من قبل المشرف أو الديسباتشر إلى (غير متاح / لا يعمل).
+              <br />
+              <strong className="text-amber-300 font-bold">
+                اضغط "رجوع" لاختيار معدة أو موقع بديل نشط، أو "موافق" إذا صدرت لك أوامر استثنائية باستخدامها.
+              </strong>
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Back button (Recommended action) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setWarningTarget(null);
+                  playClickSound();
+                }}
+                className="py-3 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-black text-sm flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md active:scale-95 border border-slate-500"
+              >
+                <RotateCcw className="w-4 h-4 text-amber-400" />
+                <span>رجوع واختيار غيرها</span>
+              </button>
+
+              {/* Confirm & Accept button */}
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound();
+                  if (warningTarget.type === 'EXCAVATOR') {
+                    proceedWithExcavator(warningTarget.id);
+                  } else {
+                    proceedWithDump(warningTarget.id);
+                  }
+                }}
+                className="py-3 px-4 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm flex items-center justify-center gap-2 cursor-pointer transition-all shadow-lg shadow-rose-900/50 active:scale-95 border border-rose-400"
+              >
+                <Check className="w-4 h-4" />
+                <span>موافق واعتماد</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================= */}
+      {/* REAL-TIME FUEL STATION OCCUPANCY MODAL (Live Across All Devices) */}
+      {/* ============================================================= */}
+      {showStationTrucksModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border-2 border-sky-500 rounded-3xl max-w-lg w-full p-5 md:p-6 shadow-2xl text-slate-100 animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-400 font-bold">
+                  <Fuel className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base md:text-lg font-black text-slate-100 flex items-center gap-2">
+                    <span>الدنابر المتواجدة بمحطة الوقود حالياً</span>
+                    <span className="px-2 py-0.5 rounded-full bg-sky-500 text-slate-950 font-mono text-xs font-black">
+                      {activeStationTrucks.length}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    تحديث حي ولحظي يظهر على شاشات جميع سائقي الأسطول
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowStationTrucksModal(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Trucks List */}
+            {activeStationTrucks.length === 0 ? (
+              <div className="p-8 text-center bg-slate-950 rounded-2xl border border-slate-800 text-slate-400 mb-4">
+                <div className="text-3xl mb-2">🟢</div>
+                <div className="font-bold text-slate-200 text-sm">محطة الوقود خالية تماماً الآن</div>
+                <p className="text-xs text-slate-400 mt-1">
+                  لا توجد دنابر في الطريق للبنزينة أو داخل المحطة حالياً، الطريق سالك للتفويل
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2 mb-4 max-h-64 overflow-y-auto p-1">
+                {activeStationTrucks.map((st) => (
+                  <div
+                    key={st.truckId}
+                    className="p-3 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center font-mono font-black text-amber-400 text-sm shrink-0">
+                        {st.truckId}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-100 truncate">
+                          {st.driverName}
+                        </div>
+                        <div className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
+                          <Clock className="w-3 h-3 text-slate-500" />
+                          <span>منذ {st.elapsedMinutes} دقيقة</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 text-left">
+                      <span className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1 border ${
+                        st.status === 'AT_STATION'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                          : 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                      }`}>
+                        {st.status === 'AT_STATION' ? '⛽ داخل المحطة الآن' : '🚚 في الطريق للبنزينة'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Note & Close */}
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <span className="text-[11px] text-slate-400">
+                ⚡ البيانات متزامنة عبر Cloud Firestore وذاكرة التابلتات
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowStationTrucksModal(false)}
+                className="py-2.5 px-5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition-colors cursor-pointer border border-slate-700"
+              >
+                إغلاق النافذة
               </button>
             </div>
           </div>
