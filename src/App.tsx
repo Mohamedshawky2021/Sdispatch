@@ -7,6 +7,7 @@ import { AdminDatabaseModal } from './components/AdminDatabaseModal';
 import { HourlyReportsArchiveModal } from './components/HourlyReportsArchiveModal';
 import { EquipmentStatusModal } from './components/EquipmentStatusModal';
 import { PerformanceDashboard } from './components/PerformanceDashboard';
+import { SupervisorPinModal } from './components/SupervisorPinModal';
 import {
   Driver,
   Truck,
@@ -15,6 +16,7 @@ import {
   TripLog,
   DispatchAlert,
   EquipmentAlert,
+  DispatcherUser,
 } from './types/dispatch';
 import {
   getStoredDrivers,
@@ -35,6 +37,8 @@ import {
   getAssignedTabletTruck,
   pullCloudMasterData,
   saveDispatcherMessages,
+  getActiveDispatcher,
+  setActiveDispatcher,
 } from './utils/storage';
 import {
   getTimeUntilNextHour,
@@ -52,6 +56,68 @@ import { playDispatchAlertSound } from './utils/audio';
 
 export default function App() {
   const [activeView, setActiveView] = useState<'CAB' | 'CONTROL' | 'DASHBOARD'>('CAB');
+
+  // Active Dispatcher Account & Protected Views State
+  const [activeDispatcher, setActiveDispatcherState] = useState<DispatcherUser | null>(() => getActiveDispatcher());
+  const [isSupervisorAuthorized, setIsSupervisorAuthorized] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('SUKARI_SUPERVISOR_AUTH') === 'true';
+    }
+    return false;
+  });
+  const [pinModalTarget, setPinModalTarget] = useState<'CONTROL' | 'DASHBOARD' | 'ADMIN' | null>(null);
+
+  const handleRequestView = (view: 'CAB' | 'CONTROL' | 'DASHBOARD') => {
+    if (view === 'CAB') {
+      setActiveView('CAB');
+      return;
+    }
+    if (isSupervisorAuthorized) {
+      setActiveView(view);
+    } else {
+      setPinModalTarget(view);
+    }
+  };
+
+  const handlePinSuccess = (target: 'CONTROL' | 'DASHBOARD' | 'ADMIN', user: DispatcherUser) => {
+    setIsSupervisorAuthorized(true);
+    setActiveDispatcher(user);
+    setActiveDispatcherState(user);
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('SUKARI_SUPERVISOR_AUTH', 'true');
+    }
+    setPinModalTarget(null);
+    if (target === 'ADMIN') {
+      setIsAdminModalOpen(true);
+    } else {
+      setActiveView(target);
+    }
+    setSyncToast({
+      title: `🔓 تم تسجيل الدخول بنجاح: ${user.name} (${user.code})`,
+      subtitle: target === 'CONTROL' ? 'مرحباً بك في غرفة الدسباتش والمراقبة المركزية' : 'مرحباً بك في لوحة تحكم الأداء والتقارير',
+    });
+    setTimeout(() => setSyncToast(null), 4000);
+  };
+
+  const handleDispatcherLogout = () => {
+    const current = activeDispatcher;
+    setActiveDispatcher(null);
+    setActiveDispatcherState(null);
+    setIsSupervisorAuthorized(false);
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('SUKARI_SUPERVISOR_AUTH');
+    }
+    setActiveView('CAB');
+    setSyncToast({
+      title: '🚪 تم تسجيل خروج الديسباتشر بنجاح',
+      subtitle: current ? `تم إنهاء نوبة ${current.name} (${current.code}) والعودة للوضع الآمن` : 'تمت العودة لشاشة السائق وتأمين النظام',
+    });
+    setTimeout(() => setSyncToast(null), 4000);
+  };
+
+  const handleLockSupervisorSession = () => {
+    handleDispatcherLogout();
+  };
 
   // Operational Data States
   const [drivers, setDrivers] = useState<Driver[]>(getStoredDrivers());
@@ -157,6 +223,7 @@ export default function App() {
     setAlerts(getStoredDispatchAlerts());
     setEquipmentAlerts(getStoredEquipmentAlerts());
     setPendingSyncCount(getPendingSyncCount());
+    setActiveDispatcherState(getActiveDispatcher());
   }, []);
 
   // Listen to network online/offline events for auto-syncing queued data
@@ -331,7 +398,11 @@ export default function App() {
       {/* Top Navigation */}
       <HeaderNav
         activeView={activeView}
-        onViewChange={setActiveView}
+        onViewChange={handleRequestView}
+        isSupervisorAuthorized={isSupervisorAuthorized}
+        onLockSupervisorSession={handleLockSupervisorSession}
+        activeDispatcher={activeDispatcher}
+        onDispatcherLogout={handleDispatcherLogout}
         onOpenMobileModal={() => setIsMobileModalOpen(true)}
         onOpenAdmin={() => setIsAdminModalOpen(true)}
         onOpenHourlyArchive={() => setIsHourlyArchiveOpen(true)}
@@ -384,6 +455,7 @@ export default function App() {
             onOpenHourlyArchive={() => setIsHourlyArchiveOpen(true)}
             onOpenAdmin={() => setIsAdminModalOpen(true)}
             onOpenEquipmentAlerts={() => setIsEquipmentModalOpen(true)}
+            onRequestProtectedView={(view) => handleRequestView(view)}
           />
         ) : activeView === 'CONTROL' ? (
           <DispatcherControlRoom
@@ -402,6 +474,8 @@ export default function App() {
             onOpenHourlyArchive={() => setIsHourlyArchiveOpen(true)}
             onOpenEquipmentAlerts={() => setIsEquipmentModalOpen(true)}
             onNavigateToDashboard={() => setActiveView('DASHBOARD')}
+            activeDispatcher={activeDispatcher}
+            onDispatcherLogout={handleDispatcherLogout}
           />
         ) : (
           <PerformanceDashboard
@@ -411,6 +485,8 @@ export default function App() {
             dumps={dumps}
             alerts={equipmentAlerts}
             onBackToControl={() => setActiveView('CONTROL')}
+            activeDispatcher={activeDispatcher}
+            onDispatcherLogout={handleDispatcherLogout}
           />
         )}
       </main>
@@ -445,6 +521,14 @@ export default function App() {
         alerts={equipmentAlerts}
         onDataChanged={reloadData}
         defaultTruckId={equipmentModalTruckId || getAssignedTabletTruck() || undefined}
+      />
+
+      {/* Supervisor & Dispatcher Protection PIN 1234 Security Modal */}
+      <SupervisorPinModal
+        isOpen={!!pinModalTarget}
+        onClose={() => setPinModalTarget(null)}
+        onSuccess={handlePinSuccess}
+        targetView={pinModalTarget}
       />
     </div>
   );

@@ -28,6 +28,7 @@ import {
   FileSpreadsheet,
   MapPin,
   AlertOctagon,
+  BarChart3,
 } from 'lucide-react';
 import {
   Driver,
@@ -112,6 +113,7 @@ interface Props {
   onOpenHourlyArchive: () => void;
   onOpenAdmin: () => void;
   onOpenEquipmentAlerts: () => void;
+  onRequestProtectedView?: (view: 'CONTROL' | 'DASHBOARD') => void;
 }
 
 // 5 Material Definitions for Step 2 (High Grade, Medium Grade, Low Grade, Sub Grade, Waste)
@@ -212,6 +214,7 @@ export const DriverInCab: React.FC<Props> = ({
   onOpenHourlyArchive,
   onOpenAdmin,
   onOpenEquipmentAlerts,
+  onRequestProtectedView,
 }) => {
   // Active In-Cab Session Persistence (Guarantees tablet stays logged in across tab closes, refresh, and sleep)
   // The driver will NEVER be logged out unless they click the explicit Logout button!
@@ -1337,6 +1340,20 @@ export const DriverInCab: React.FC<Props> = ({
               </div>
             </button>
 
+            {/* Quick Supervisor / Dispatcher Room Access Button */}
+            {onRequestProtectedView && (
+              <button
+                type="button"
+                onClick={() => onRequestProtectedView('CONTROL')}
+                className="py-1.5 px-2.5 sm:px-3 rounded-xl border border-amber-500/40 bg-slate-900 hover:bg-slate-800 text-amber-400 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md transition-colors"
+                title="دخول المشرف أو الديسباتشر لغرفة التحكم والتقارير"
+              >
+                <Radio className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                <span className="hidden sm:inline">غرفة التحكم</span>
+                <span className="font-mono text-[10px] bg-amber-500/15 text-amber-400 px-1.5 py-0.2 rounded border border-amber-500/30">دخول سري 🔒</span>
+              </button>
+            )}
+
             {/* In-Cab Emergency SOS Button */}
             <button
               type="button"
@@ -1609,6 +1626,96 @@ export const DriverInCab: React.FC<Props> = ({
                   {activeStationTrucks.length === 0
                     ? 'خالية (0 دنابر) 🟢'
                     : `${activeStationTrucks.length} ${activeStationTrucks.length === 1 ? 'دنبر' : 'دنابر'} بالبنزينة ⛽`}
+                </button>
+              </div>
+            </div>
+
+            {/* Dedicated Supervisor, Control Room & Reports Hub (PIN 1234 Protection) */}
+            <div className="mt-5 p-4 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-900/90 to-amber-950/20 border-2 border-amber-500/50 shadow-xl text-right">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400 flex items-center justify-center font-bold text-sm">
+                    🛡️
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-slate-100 flex items-center gap-2">
+                      <span>غرفة العمليات المركزية والتقارير</span>
+                      <span className="py-0.5 px-2 rounded-full bg-amber-500 text-slate-950 font-mono text-[10px] font-bold">
+                        حساب ديسباتشر 🔒
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-slate-400">
+                      دخول مخصص للديسباتشر ومشرفي الإنتاج برقم سري خاص
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => onRequestProtectedView ? onRequestProtectedView('CONTROL') : null}
+                  className="py-3 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 active:scale-98 border border-amber-500/40 hover:border-amber-400 text-slate-100 flex items-center justify-between gap-2 transition-all cursor-pointer shadow-md group"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold">
+                      <Radio className="w-4 h-4 animate-pulse" />
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs font-black group-hover:text-amber-400 transition-colors">
+                        غرفة الدسباتش والمراقبة 📡
+                      </div>
+                      <div className="text-[10px] text-slate-400">
+                        متابعة فورية للحفرة والأساطيل
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                    دخول سري 🔒
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onRequestProtectedView ? onRequestProtectedView('DASHBOARD') : null}
+                  className="py-3 px-4 rounded-xl bg-slate-800/90 hover:bg-slate-700/90 active:scale-98 border border-sky-500/40 hover:border-sky-400 text-slate-100 flex items-center justify-between gap-2 transition-all cursor-pointer shadow-md group"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center font-bold">
+                      <BarChart3 className="w-4 h-4" />
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs font-black group-hover:text-sky-400 transition-colors">
+                        لوحة تحكم الأداء والتقارير 📊
+                      </div>
+                      <div className="text-[10px] text-slate-400">
+                        إنتاجية الساعات والطن والمعدات
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/30">
+                    دخول سري 🔒
+                  </span>
+                </button>
+              </div>
+
+              <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={onOpenHourlyArchive}
+                  className="text-xs font-bold text-sky-400 hover:text-sky-300 flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>أرشيف تقارير الساعات والشيتات</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onOpenAdmin}
+                  className="text-xs font-bold text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>إدارة قاعدة البيانات (الأدمن)</span>
                 </button>
               </div>
             </div>

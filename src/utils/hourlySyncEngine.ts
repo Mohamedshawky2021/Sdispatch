@@ -8,6 +8,7 @@ import {
   getStoredEquipmentAlerts,
   generateHourlyFormattedText,
   openWhatsAppShare,
+  getActiveDispatcher,
 } from './storage';
 import { playDispatchAlertSound } from './audio';
 
@@ -67,6 +68,8 @@ export function checkAndTriggerHourlyExport(force = false): HourlyExportSnapshot
     `تقرير الساعات - منجم السكري - الساعة ${formattedHour}`
   );
 
+  const activeDispatcher = getActiveDispatcher();
+
   const whatsappMessage = generateHourlyFormattedText({
     hourLabel: formattedHour,
     totalTripsThisHour,
@@ -79,6 +82,8 @@ export function checkAndTriggerHourlyExport(force = false): HourlyExportSnapshot
     cumulativeShiftTonnes,
     activeBreakdownsCount,
     trips: tripsToExport,
+    dispatcherName: activeDispatcher?.name,
+    dispatcherCode: activeDispatcher?.code,
   });
 
   const snapshot: HourlyExportSnapshot = {
@@ -103,6 +108,8 @@ export function checkAndTriggerHourlyExport(force = false): HourlyExportSnapshot
     trips: tripsToExport,
     csvContent,
     whatsappMessage,
+    dispatcherName: activeDispatcher?.name,
+    dispatcherCode: activeDispatcher?.code,
   };
 
   saveHourlyExport(snapshot);

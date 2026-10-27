@@ -21,6 +21,7 @@ import {
   ExternalLink,
   FileSpreadsheet,
   Calendar,
+  LogOut,
 } from 'lucide-react';
 import {
   Driver,
@@ -31,6 +32,7 @@ import {
   DispatchAlert,
   EquipmentAlert,
   FuelingLog,
+  DispatcherUser,
 } from '../types/dispatch';
 import {
   generateTripsCSV,
@@ -81,6 +83,8 @@ interface Props {
   onOpenHourlyArchive: () => void;
   onOpenEquipmentAlerts: () => void;
   onNavigateToDashboard?: () => void;
+  activeDispatcher?: DispatcherUser | null;
+  onDispatcherLogout?: () => void;
 }
 
 export const DispatcherControlRoom: React.FC<Props> = ({
@@ -99,6 +103,8 @@ export const DispatcherControlRoom: React.FC<Props> = ({
   onOpenHourlyArchive,
   onOpenEquipmentAlerts,
   onNavigateToDashboard,
+  activeDispatcher,
+  onDispatcherLogout,
 }) => {
   const [fleetTab, setFleetTab] = useState<'TRUCKS' | 'LOADERS' | 'CHARTS'>('TRUCKS');
   const [truckStatusFilter, setTruckStatusFilter] = useState<
@@ -428,6 +434,37 @@ export const DispatcherControlRoom: React.FC<Props> = ({
 
       {/* Top Banner & Quick Controls */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
+        {/* Active Dispatcher Info & Prominent Logout Strip */}
+        {activeDispatcher && (
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 px-4 rounded-xl bg-slate-950 border border-amber-500/40 w-full shadow-inner">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+              <div>
+                <span className="text-xs text-slate-400">الديسباتشر المناوب المسجل: </span>
+                <strong className="text-sm font-black text-amber-400">{activeDispatcher.name}</strong>
+                <span className="mr-2 font-mono text-xs bg-slate-800 px-2 py-0.5 rounded text-slate-300 border border-slate-700">
+                  كود: {activeDispatcher.code}
+                </span>
+                <span className="mr-2 text-[11px] text-emerald-400 font-bold">
+                  (التقارير والشيتات تصدر باسمه)
+                </span>
+              </div>
+            </div>
+
+            {onDispatcherLogout && (
+              <button
+                type="button"
+                onClick={onDispatcherLogout}
+                className="py-2 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs md:text-sm flex items-center gap-2 shadow-lg shadow-rose-900/40 cursor-pointer active:scale-95 transition-all border border-rose-400"
+                title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>تسجيل خروج الديسباتشر 🚪</span>
+              </button>
+            )}
+          </div>
+        )}
+
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-black text-slate-100 flex items-center gap-2">

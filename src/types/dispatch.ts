@@ -248,3 +248,15 @@ export interface ProductionGapAlert {
   correctiveAction: string;
 }
 
+export interface DispatcherUser {
+  id: string; // e.g. 'DSP-01'
+  code: string; // e.g. 'DSP01'
+  name: string; // e.g. 'م. أحمد فؤاد'
+  pin: string; // Secret PIN / password
+  role: 'DISPATCHER' | 'CHIEF_DISPATCHER' | 'SUPERVISOR';
+  phone?: string;
+  active: boolean;
+  createdAt?: string;
+  lastLoginAt?: string;
+}
+

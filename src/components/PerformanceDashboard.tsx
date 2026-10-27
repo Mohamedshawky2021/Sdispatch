@@ -26,8 +26,10 @@ import {
   FileText,
   Target,
   Send,
+  LogOut,
+  User,
 } from 'lucide-react';
-import { Truck, Excavator, DumpLocation, TripLog, MaterialType, EquipmentAlert } from '../types/dispatch';
+import { Truck, Excavator, DumpLocation, TripLog, MaterialType, EquipmentAlert, DispatcherUser } from '../types/dispatch';
 import {
   computeHourlyProductivity,
   computeTruckCumulativeStats,
@@ -54,6 +56,8 @@ interface Props {
   onOpenEquipmentAlerts?: () => void;
   activeBreakdownsCount?: number;
   onBackToControl?: () => void;
+  activeDispatcher?: DispatcherUser | null;
+  onDispatcherLogout?: () => void;
 }
 
 export const PerformanceDashboard: React.FC<Props> = ({
@@ -67,6 +71,8 @@ export const PerformanceDashboard: React.FC<Props> = ({
   onOpenEquipmentAlerts,
   activeBreakdownsCount = 0,
   onBackToControl,
+  activeDispatcher,
+  onDispatcherLogout,
 }) => {
   // Filters & State
   const [shiftFilter, setShiftFilter] = useState<'ALL' | 'MORNING' | 'NIGHT'>('ALL');
@@ -230,6 +236,37 @@ export const PerformanceDashboard: React.FC<Props> = ({
 
   return (
     <div className="flex-1 bg-slate-950 text-slate-100 p-4 md:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full">
+      {/* Active Dispatcher Strip & Prominent Logout */}
+      {activeDispatcher && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 px-4 rounded-xl bg-slate-900 border border-amber-500/40 w-full shadow-inner">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <div>
+              <span className="text-xs text-slate-400">الديسباتشر المسؤول عن تقارير الوردية: </span>
+              <strong className="text-sm font-black text-amber-400">{activeDispatcher.name}</strong>
+              <span className="mr-2 font-mono text-xs bg-slate-800 px-2 py-0.5 rounded text-slate-300 border border-slate-700">
+                كود: {activeDispatcher.code}
+              </span>
+              <span className="mr-2 text-[11px] text-emerald-400 font-bold">
+                (تسجيل التقارير باسمه)
+              </span>
+            </div>
+          </div>
+
+          {onDispatcherLogout && (
+            <button
+              type="button"
+              onClick={onDispatcherLogout}
+              className="py-2 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs md:text-sm flex items-center gap-2 shadow-lg shadow-rose-900/40 cursor-pointer active:scale-95 transition-all border border-rose-400"
+              title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>تسجيل خروج الديسباتشر 🚪</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Top Header & Control Strip */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 md:p-6 shadow-xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>

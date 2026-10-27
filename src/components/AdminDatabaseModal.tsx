@@ -27,6 +27,7 @@ import {
   Send,
   Radio,
   Eye,
+  EyeOff,
   Link as LinkIcon,
   Edit3,
   Pencil,
@@ -46,6 +47,7 @@ import {
   DispatcherDirectMessage,
   CustomStandbyReason,
   ParkingLocation,
+  DispatcherUser,
 } from '../types/dispatch';
 import {
   getStoredDrivers,
@@ -77,6 +79,11 @@ import {
   addParkingLocation,
   updateParkingLocation,
   deleteParkingLocation,
+  getStoredDispatchers,
+  saveDispatchers,
+  addDispatcher,
+  updateDispatcher,
+  deleteDispatcher,
 } from '../utils/storage';
 import { checkAndTriggerHourlyExport } from '../utils/hourlySyncEngine';
 import { playClickSound, playLoadConfirmedSound, playDispatchAlertSound } from '../utils/audio';
@@ -115,7 +122,18 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
-  const [activeTab, setActiveTab] = useState<'DRIVERS' | 'TRUCKS' | 'EXCAVATORS' | 'DUMPS' | 'STANDBY_REASONS' | 'PARKINGS' | 'CONFIG' | 'GOOGLE_SHEETS' | 'DIRECT_MESSAGES'>('DRIVERS');
+  const [activeTab, setActiveTab] = useState<'DRIVERS' | 'DISPATCHERS' | 'TRUCKS' | 'EXCAVATORS' | 'DUMPS' | 'STANDBY_REASONS' | 'PARKINGS' | 'CONFIG' | 'GOOGLE_SHEETS' | 'DIRECT_MESSAGES'>('DRIVERS');
+
+  // Dispatcher Accounts Management
+  const [dispatchers, setDispatchers] = useState<DispatcherUser[]>(getStoredDispatchers());
+  const [newDispCode, setNewDispCode] = useState('');
+  const [newDispName, setNewDispName] = useState('');
+  const [newDispPin, setNewDispPin] = useState('');
+  const [newDispPhone, setNewDispPhone] = useState('');
+  const [newDispRole, setNewDispRole] = useState<'DISPATCHER' | 'CHIEF_DISPATCHER' | 'SUPERVISOR'>('DISPATCHER');
+  const [editingDispId, setEditingDispId] = useState<string | null>(null);
+  const [editingDispPin, setEditingDispPin] = useState('');
+  const [showDispPins, setShowDispPins] = useState<Record<string, boolean>>({});
 
   // Master Data Editing States (Without Deleting)
   const [editingTruck, setEditingTruck] = useState<Truck | null>(null);
@@ -398,6 +416,78 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
     setDrivers(updated);
     saveDrivers(updated);
     showStatus(`تم حذف السائق.`);
+    onDataChanged();
+  };
+
+  // Dispatcher Accounts Handlers
+  const handleAddDispatcher = (e: React.FormEvent) => {
+    e.preventDefault();
+    recordActivity();
+    if (!newDispCode.trim() || !newDispName.trim() || !newDispPin.trim()) {
+      showStatus('يرجى ملء جميع الحقول المطلوبة (الكود، الاسم، الرقم السري)');
+      return;
+    }
+    if (newDispPin.trim().length < 4) {
+      showStatus('يجب ألا يقل الرقم السري عن 4 أرقام');
+      return;
+    }
+    const cleanCode = newDispCode.trim().toUpperCase();
+    if (dispatchers.some(d => d.code.toUpperCase() === cleanCode)) {
+      showStatus(`كود الديسباتشر (${cleanCode}) مسجل مسبقاً!`);
+      return;
+    }
+    const created = addDispatcher({
+      code: cleanCode,
+      name: newDispName.trim(),
+      pin: newDispPin.trim(),
+      role: newDispRole,
+      phone: newDispPhone.trim() || undefined,
+      active: true,
+    });
+    setDispatchers(getStoredDispatchers());
+    setNewDispCode('');
+    setNewDispName('');
+    setNewDispPin('');
+    setNewDispPhone('');
+    playLoadConfirmedSound();
+    showStatus(`تم إنشاء حساب الديسباتشر (${created.name}) بنجاح وربطه برقم سري شخصي ✅`);
+    onDataChanged();
+  };
+
+  const handleToggleDispatcherActive = (id: string, currentActive: boolean) => {
+    recordActivity();
+    playClickSound();
+    updateDispatcher(id, { active: !currentActive });
+    setDispatchers(getStoredDispatchers());
+    showStatus('تم تحديث حالة حساب الديسباتشر ومزامنتها فوراً ✅');
+    onDataChanged();
+  };
+
+  const handleUpdateDispatcherPin = (id: string, newPin: string) => {
+    recordActivity();
+    if (!newPin || newPin.length < 4) {
+      showStatus('يجب ألا يقل الرقم السري عن 4 أرقام');
+      return;
+    }
+    updateDispatcher(id, { pin: newPin });
+    setDispatchers(getStoredDispatchers());
+    setEditingDispId(null);
+    setEditingDispPin('');
+    playLoadConfirmedSound();
+    showStatus('تم تغيير وتحديث الرقم السري للديسباتشر بنجاح 🔒');
+    onDataChanged();
+  };
+
+  const handleDeleteDispatcher = (id: string) => {
+    recordActivity();
+    if (dispatchers.length <= 1) {
+      showStatus('لا يمكن حذف جميع حسابات الديسباتشر، يجب الإبقاء على حساب واحد على الأقل');
+      return;
+    }
+    playClickSound();
+    deleteDispatcher(id);
+    setDispatchers(getStoredDispatchers());
+    showStatus('تم حذف حساب الديسباتشر بنجاح');
     onDataChanged();
   };
 
@@ -1159,6 +1249,18 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
               </button>
 
               <button
+                onClick={() => { setActiveTab('DISPATCHERS'); recordActivity(); }}
+                className={`py-2 px-3.5 rounded-xl text-xs md:text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeTab === 'DISPATCHERS'
+                    ? 'bg-amber-500 text-slate-950 shadow-md'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>حسابات الديسباتشر 🛡️ ({dispatchers.length})</span>
+              </button>
+
+              <button
                 onClick={() => { setActiveTab('TRUCKS'); recordActivity(); }}
                 className={`py-2 px-3.5 rounded-xl text-xs md:text-sm font-bold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   activeTab === 'TRUCKS'
@@ -1354,6 +1456,232 @@ export const AdminDatabaseModal: React.FC<Props> = ({ isOpen, onClose, onDataCha
                               </td>
                             </tr>
                           ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB: DISPATCHERS (حسابات وأكواد الديسباتشر المحمية بأرقام سرية) */}
+              {activeTab === 'DISPATCHERS' && (
+                <div className="space-y-6">
+                  {/* Info Banner */}
+                  <div className="p-4 bg-gradient-to-r from-amber-500/10 via-slate-900 to-indigo-500/10 border border-amber-500/30 rounded-2xl flex items-start gap-3">
+                    <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-400 shrink-0">
+                      <ShieldCheck className="w-6 h-6" />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="text-sm font-bold text-amber-300">
+                        نظام حسابات الديسباتشر المستقلة والرمز السري (Dispatcher Accounts & Private PINs)
+                      </h4>
+                      <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                        لكل منسق ديسباتش حسابه الخاص بكود فريد ورقم سري غير معلن. عند تسجيل الدخول باسمه، تُسجل كافة التقارير الساعية وشيتات الإكسيل والرسائل الميدانية باسمه وكوده المعتمد. يمكن لأي ديسباتشر تغيير رقمه السري مباشرة أو من خلال هذه اللوحة.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Add New Dispatcher Form */}
+                  <form onSubmit={handleAddDispatcher} className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl">
+                    <h4 className="text-sm font-bold text-amber-400 mb-3 flex items-center gap-2">
+                      <Plus className="w-4 h-4" /> إنشاء وتعيين حساب ديسباتشر جديد
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">كود الديسباتشر (مثال: DSP05)</label>
+                        <input
+                          type="text"
+                          value={newDispCode}
+                          onChange={(e) => setNewDispCode(e.target.value)}
+                          placeholder="DSP05"
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm font-mono text-center text-slate-100 uppercase"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">اسم المهندس / الديسباتشر</label>
+                        <input
+                          type="text"
+                          value={newDispName}
+                          onChange={(e) => setNewDispName(e.target.value)}
+                          placeholder="م. رامي سمير"
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-100"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">الدور الوظيفي</label>
+                        <select
+                          value={newDispRole}
+                          onChange={(e) => setNewDispRole(e.target.value as any)}
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200"
+                        >
+                          <option value="DISPATCHER">منسق دسباتش وردية (Dispatcher)</option>
+                          <option value="CHIEF_DISPATCHER">رئيس قسم الدسباتش (Chief Dispatcher)</option>
+                          <option value="SUPERVISOR">مشرف عمليات المنجم (Pit Supervisor)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">الرقم السري الخاص (PIN - 4 أرقام فأكثر)</label>
+                        <input
+                          type="password"
+                          value={newDispPin}
+                          onChange={(e) => setNewDispPin(e.target.value.replace(/\D/g, ''))}
+                          placeholder="••••"
+                          maxLength={8}
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-amber-500/50 text-sm font-mono text-center text-amber-300"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 block mb-1">رقم الهاتف (اختياري)</label>
+                        <input
+                          type="text"
+                          value={newDispPhone}
+                          onChange={(e) => setNewDispPhone(e.target.value)}
+                          placeholder="010xxxxxxxx"
+                          className="w-full py-2 px-3 rounded-lg bg-slate-900 border border-slate-700 text-sm font-mono text-slate-100"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="submit"
+                        className="py-2 px-4 rounded-xl font-bold text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-md cursor-pointer flex items-center gap-1.5"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>حفظ وإنشاء حساب الديسباتشر</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Dispatchers Table */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl overflow-hidden">
+                    <div className="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-300 flex items-center gap-2">
+                        <Users className="w-4 h-4 text-amber-400" />
+                        قائمة حسابات الديسباتشر المعتمدة ({dispatchers.length})
+                      </h4>
+                      <span className="text-[11px] text-slate-400 font-mono">
+                        جميع الأرقام السرية مشفرة ولا تظهر إلا بصلاحية المشرف
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-right text-xs">
+                        <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+                          <tr>
+                            <th className="py-2.5 px-3">الكود</th>
+                            <th className="py-2.5 px-3">الاسم</th>
+                            <th className="py-2.5 px-3">الدور الوظيفي</th>
+                            <th className="py-2.5 px-3">الهاتف</th>
+                            <th className="py-2.5 px-3">الحالة</th>
+                            <th className="py-2.5 px-3 text-center">الرقم السري (PIN)</th>
+                            <th className="py-2.5 px-3 text-center">إجراءات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-medium">
+                          {dispatchers.map((disp) => {
+                            const isPinVisible = showDispPins[disp.id];
+                            const isEditingThisPin = editingDispId === disp.id;
+                            const roleLabel =
+                              disp.role === 'CHIEF_DISPATCHER'
+                                ? 'رئيس قسم الدسباتش'
+                                : disp.role === 'SUPERVISOR'
+                                ? 'مشرف عمليات'
+                                : 'منسق دسباتش وردية';
+
+                            return (
+                              <tr key={disp.id} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="py-2 px-3 font-mono text-amber-400 font-bold">
+                                  {disp.code}
+                                </td>
+                                <td className="py-2 px-3 text-slate-200 font-bold">
+                                  {disp.name}
+                                </td>
+                                <td className="py-2 px-3 text-slate-400">
+                                  <span className="py-0.5 px-2 rounded-md bg-slate-800 text-[11px] font-bold text-slate-300 border border-slate-700">
+                                    {roleLabel}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-3 text-slate-400 font-mono">
+                                  {disp.phone || '—'}
+                                </td>
+                                <td className="py-2 px-3">
+                                  <button
+                                    onClick={() => handleToggleDispatcherActive(disp.id, disp.active)}
+                                    className={`py-0.5 px-2 rounded-md text-[11px] font-bold cursor-pointer transition-colors ${
+                                      disp.active
+                                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                                        : 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                                    }`}
+                                    title="تبديل تفعيل الحساب"
+                                  >
+                                    {disp.active ? '🟢 نشط ومفعل' : '🔴 معطل'}
+                                  </button>
+                                </td>
+                                <td className="py-2 px-3 text-center">
+                                  {isEditingThisPin ? (
+                                    <div className="flex items-center justify-center gap-1.5">
+                                      <input
+                                        type="password"
+                                        value={editingDispPin}
+                                        onChange={(e) => setEditingDispPin(e.target.value.replace(/\D/g, ''))}
+                                        placeholder="رمز جديد"
+                                        maxLength={8}
+                                        className="w-20 py-1 px-1.5 rounded bg-slate-900 border border-amber-400 text-xs font-mono text-center text-amber-300"
+                                        autoFocus
+                                      />
+                                      <button
+                                        onClick={() => handleUpdateDispatcherPin(disp.id, editingDispPin)}
+                                        className="p-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
+                                        title="حفظ الرمز السري الجديد"
+                                      >
+                                        <Check className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => { setEditingDispId(null); setEditingDispPin(''); }}
+                                        className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+                                        title="إلغاء"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-center gap-2">
+                                      <span className="font-mono font-bold tracking-widest text-slate-300">
+                                        {isPinVisible ? disp.pin : '••••'}
+                                      </span>
+                                      <button
+                                        onClick={() => setShowDispPins(prev => ({ ...prev, [disp.id]: !prev[disp.id] }))}
+                                        className="p-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                                        title={isPinVisible ? 'إخفاء الرقم السري' : 'إظهار الرقم السري'}
+                                      >
+                                        {isPinVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                      </button>
+                                      <button
+                                        onClick={() => { setEditingDispId(disp.id); setEditingDispPin(''); }}
+                                        className="py-0.5 px-1.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[10px] font-bold cursor-pointer transition-colors"
+                                        title="تغيير الرقم السري لهذا الديسباتشر"
+                                      >
+                                        تغيير PIN 🔑
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-2 px-3 text-center">
+                                  <button
+                                    onClick={() => handleDeleteDispatcher(disp.id)}
+                                    disabled={dispatchers.length <= 1}
+                                    className="p-1 text-slate-500 hover:text-red-400 transition-colors rounded hover:bg-slate-800 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                    title="حذف حساب الديسباتشر"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

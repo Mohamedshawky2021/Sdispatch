@@ -18,6 +18,7 @@ import {
   DriverSessionRecord,
   CustomStandbyReason,
   ParkingLocation,
+  DispatcherUser,
 } from '../types/dispatch';
 import {
   sendCloudDispatcherMessage,
@@ -71,6 +72,8 @@ const STORAGE_KEYS = {
   CUSTOM_TRUCKS_ORDER: 'sukari_custom_trucks_order_v2',
   CUSTOM_EXCAVATORS_ORDER: 'sukari_custom_excavators_order_v2',
   PARKINGS: 'sukari_parkings_v2',
+  DISPATCHERS: 'sukari_dispatchers_v2',
+  ACTIVE_DISPATCHER: 'sukari_active_dispatcher_v2',
 };
 
 export interface HourlyExportSnapshot {
@@ -91,6 +94,8 @@ export interface HourlyExportSnapshot {
   trips: TripLog[];
   csvContent: string;
   whatsappMessage: string;
+  dispatcherName?: string;
+  dispatcherCode?: string;
 }
 
 export interface AppConfig {
@@ -121,6 +126,14 @@ export const INITIAL_DRIVERS: Driver[] = [
   { code: '1006', name: 'طارق عبد الرحيم', role: 'سائق دنبر منجمي', licenseLevel: 'درجة أولى منجمية', phone: '01012345006' },
   { code: '1007', name: 'ياسر القناوي', role: 'سائق دنبر منجمي', licenseLevel: 'درجة أولى منجمية', phone: '01012345007' },
   { code: '1008', name: 'خالد الصعيدي', role: 'سائق دنبر منجمي', licenseLevel: 'درجة أولى منجمية', phone: '01012345008' },
+];
+
+// Initial default seed dispatchers with unique codes and secret PINs
+export const INITIAL_DISPATCHERS: DispatcherUser[] = [
+  { id: 'DSP-01', code: 'DSP01', name: 'م. أحمد فؤاد', pin: '1234', role: 'CHIEF_DISPATCHER', phone: '01011110001', active: true, createdAt: '2026-01-01' },
+  { id: 'DSP-02', code: 'DSP02', name: 'م. محمود علي', pin: '2024', role: 'DISPATCHER', phone: '01011110002', active: true, createdAt: '2026-01-01' },
+  { id: 'DSP-03', code: 'DSP03', name: 'م. إبراهيم حسن', pin: '5566', role: 'DISPATCHER', phone: '01011110003', active: true, createdAt: '2026-01-01' },
+  { id: 'DSP-04', code: 'DSP04', name: 'م. سامح عزت', pin: '7788', role: 'SUPERVISOR', phone: '01011110004', active: true, createdAt: '2026-01-01' },
 ];
 
 // Generate 60 Dump Trucks: DT001 to DT060 with exact 152 tonnes capacity
@@ -352,6 +365,105 @@ export function saveDrivers(drivers: Driver[]) {
   localStorage.setItem(STORAGE_KEYS.DRIVERS, JSON.stringify(drivers));
   broadcastDataChange('DRIVERS_UPDATED', drivers);
   syncMasterDataToCloud('drivers', drivers);
+}
+
+// ==========================================
+// DISPATCHER ACCOUNTS & SESSION MANAGEMENT
+// ==========================================
+
+export function getStoredDispatchers(): DispatcherUser[] {
+  if (typeof window === 'undefined') return INITIAL_DISPATCHERS;
+  const raw = localStorage.getItem(STORAGE_KEYS.DISPATCHERS);
+  if (!raw) {
+    localStorage.setItem(STORAGE_KEYS.DISPATCHERS, JSON.stringify(INITIAL_DISPATCHERS));
+    return INITIAL_DISPATCHERS;
+  }
+  try {
+    const list: DispatcherUser[] = JSON.parse(raw);
+    if (!Array.isArray(list) || list.length === 0) return INITIAL_DISPATCHERS;
+    return list;
+  } catch {
+    return INITIAL_DISPATCHERS;
+  }
+}
+
+export function saveDispatchers(dispatchers: DispatcherUser[]) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEYS.DISPATCHERS, JSON.stringify(dispatchers));
+  broadcastDataChange('DISPATCHERS_UPDATED', dispatchers);
+  syncMasterDataToCloud('dispatchers', dispatchers);
+}
+
+export function getActiveDispatcher(): DispatcherUser | null {
+  if (typeof window === 'undefined') return null;
+  const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_DISPATCHER);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveDispatcher(dispatcher: DispatcherUser | null) {
+  if (typeof window === 'undefined') return;
+  if (!dispatcher) {
+    localStorage.removeItem(STORAGE_KEYS.ACTIVE_DISPATCHER);
+  } else {
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_DISPATCHER, JSON.stringify(dispatcher));
+  }
+  broadcastDataChange('ACTIVE_DISPATCHER_UPDATED', dispatcher);
+}
+
+export function addDispatcher(user: Omit<DispatcherUser, 'id'>): DispatcherUser {
+  const current = getStoredDispatchers();
+  const id = `DSP-${Date.now().toString(36)}`;
+  const newUser: DispatcherUser = {
+    ...user,
+    id,
+    createdAt: new Date().toISOString(),
+  };
+  const updated = [...current, newUser];
+  saveDispatchers(updated);
+  return newUser;
+}
+
+export function updateDispatcher(id: string, partial: Partial<DispatcherUser>): boolean {
+  const current = getStoredDispatchers();
+  let found = false;
+  const updated = current.map(u => {
+    if (u.id === id) {
+      found = true;
+      return { ...u, ...partial };
+    }
+    return u;
+  });
+  if (found) {
+    saveDispatchers(updated);
+    const active = getActiveDispatcher();
+    if (active && active.id === id) {
+      setActiveDispatcher({ ...active, ...partial });
+    }
+  }
+  return found;
+}
+
+export function deleteDispatcher(id: string): boolean {
+  const current = getStoredDispatchers();
+  const updated = current.filter(u => u.id !== id);
+  saveDispatchers(updated);
+  const active = getActiveDispatcher();
+  if (active && active.id === id) {
+    setActiveDispatcher(null);
+  }
+  return true;
+}
+
+export function changeMasterAdminPin(newPin: string): boolean {
+  const config = getAppConfig();
+  config.adminPin = newPin;
+  saveAppConfig(config);
+  return true;
 }
 
 export function getStoredTrucks(): Truck[] {
@@ -1024,6 +1136,8 @@ export function generateHourlyFormattedText(snapshot: {
   cumulativeShiftTonnes: number;
   activeBreakdownsCount?: number;
   trips?: TripLog[];
+  dispatcherName?: string;
+  dispatcherCode?: string;
 }): string {
   const dateStr = new Date().toLocaleDateString('ar-EG', {
     weekday: 'long',
@@ -1070,10 +1184,15 @@ export function generateHourlyFormattedText(snapshot: {
     return `🚛 *دنبر [${truckId}]:* ${s.trips} نقلات (${s.tonnes.toLocaleString()} طن) | خام: ${mats} | حفار: ${exs} | مقلب: ${dmps}`;
   }).join('\n');
 
+  const dispatcherLabel = snapshot.dispatcherName
+    ? `${snapshot.dispatcherName} (${snapshot.dispatcherCode || 'DSP'})`
+    : 'غرفة العمليات المركزية';
+
   return `📊 *تقرير الدسباتش الساعي الرسمي — منجم السكري لمناجم الذهب*
 ━━━━━━━━━━━━━━━━━━━━
 ⏰ *رقم وتوقيت التقرير:* تقرير الساعة ${snapshot.hourLabel} (${timeStr})
 📅 *التاريخ:* ${dateStr}
+👤 *الديسباتشر المناوب:* *${dispatcherLabel}*
 ⛏️ *قطاع التشغيل:* الحفرة المفتوحة (Open Pit)
 ⚖️ *حمولة الدنبر المعتمدة بالحسابات:* 152 طن / نقلة
 

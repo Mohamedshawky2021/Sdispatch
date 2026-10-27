@@ -872,7 +872,7 @@ export interface MasterDataPayload<T = any> {
 }
 
 export async function syncMasterDataToCloud(
-  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings',
+  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings' | 'dispatchers',
   data: any,
   updatedBy: string = 'Admin'
 ): Promise<void> {
@@ -891,7 +891,7 @@ export async function syncMasterDataToCloud(
 }
 
 export async function fetchMasterDataFromCloud(
-  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings'
+  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings' | 'dispatchers'
 ): Promise<any | null> {
   const path = `admin_master_data/${docId}`;
   try {
