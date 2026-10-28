@@ -29,6 +29,8 @@ import {
   MapPin,
   AlertOctagon,
   BarChart3,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import {
   Driver,
@@ -42,6 +44,7 @@ import {
   FuelingLog,
   DispatcherDirectMessage,
   ParkingLocation,
+  TruckExcavatorAssignment,
 } from '../types/dispatch';
 import {
   playClickSound,
@@ -81,6 +84,7 @@ import {
   getActiveFuelingStationTrucks,
   ActiveStationTruck,
   getParkingLocations,
+  getAssignedExcavatorForTruck,
 } from '../utils/storage';
 import { useBatteryStatus } from '../hooks/useBatteryStatus';
 import { triggerBackgroundSheetsSync } from '../utils/googleSheets';
@@ -100,6 +104,7 @@ import {
   EmergencySosAlert,
   subscribeToCloudFuelings,
   subscribeToFleetTrucks,
+  decryptData,
 } from '../utils/firebaseSync';
 
 interface Props {
@@ -340,6 +345,35 @@ export const DriverInCab: React.FC<Props> = ({
   const [selectedParkingId, setSelectedParkingId] = useState<string>('PARK-01');
   const [logoutParkingNotes, setLogoutParkingNotes] = useState<string>('');
 
+  // 4. Assigned Excavator Fleet Circuit
+  const [assignedCircuit, setAssignedCircuit] = useState<TruckExcavatorAssignment | null>(() =>
+    savedSession?.truck ? getAssignedExcavatorForTruck(savedSession.truck.id) : null
+  );
+
+  // 5. Text-to-Speech audio read aloud state for driver direct messages
+  const [isSpeakingMessage, setIsSpeakingMessage] = useState(false);
+
+  const handleSpeakMessage = (text: string) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      showAlert('المتصفح أو الجهاز لا يدعم التلاوة الصوتية', 'WARNING');
+      return;
+    }
+    if (isSpeakingMessage) {
+      window.speechSynthesis.cancel();
+      setIsSpeakingMessage(false);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'ar-SA';
+    utterance.rate = 0.92;
+    utterance.pitch = 1.0;
+    utterance.onend = () => setIsSpeakingMessage(false);
+    utterance.onerror = () => setIsSpeakingMessage(false);
+    setIsSpeakingMessage(true);
+    window.speechSynthesis.speak(utterance);
+  };
+
   const showAlert = (text: string, type: 'SUCCESS' | 'WARNING' | 'INFO' = 'SUCCESS') => {
     setAlertMessage({ text, type });
     setTimeout(() => setAlertMessage(null), 4000);
@@ -437,10 +471,19 @@ export const DriverInCab: React.FC<Props> = ({
   // Listen for targeted dispatcher instructions
   useEffect(() => {
     if (!currentTruck) return;
-    const checkIncomingMessages = () => {
+    const checkIncomingMessages = async () => {
       const unread = getUnacknowledgedMessagesForTruck(currentTruck.id);
       if (unread.length > 0 && (!incomingDirectMessage || incomingDirectMessage.id !== unread[0].id)) {
-        setIncomingDirectMessage(unread[0]);
+        const rawMsg = unread[0];
+        let cleanText = rawMsg.messageText;
+        if (cleanText && (cleanText.startsWith('U2FsdGVkX1') || cleanText.startsWith('ENC_GCM_V1:'))) {
+          try {
+            cleanText = (await decryptData<string>(cleanText)) || cleanText;
+          } catch {
+            // keep cleanText
+          }
+        }
+        setIncomingDirectMessage({ ...rawMsg, messageText: cleanText });
         setShowDirectMessageModal(true);
         playDispatchAlertSound();
       }
@@ -464,9 +507,17 @@ export const DriverInCab: React.FC<Props> = ({
   // -------------------------------------------------------------
   useEffect(() => {
     if (!currentTruck) return;
-    const unsubCloudMsg = listenForUnitMessages(currentTruck.id, (_msgText, fullMessage) => {
+    const unsubCloudMsg = listenForUnitMessages(currentTruck.id, async (_msgText, fullMessage) => {
       if (fullMessage) {
-        setIncomingDirectMessage(fullMessage);
+        let cleanText = fullMessage.messageText;
+        if (cleanText && (cleanText.startsWith('U2FsdGVkX1') || cleanText.startsWith('ENC_GCM_V1:'))) {
+          try {
+            cleanText = (await decryptData<string>(cleanText)) || cleanText;
+          } catch {
+            // keep cleanText
+          }
+        }
+        setIncomingDirectMessage({ ...fullMessage, messageText: cleanText });
         setShowDirectMessageModal(true);
         playDispatchAlertSound();
       }
@@ -712,6 +763,9 @@ export const DriverInCab: React.FC<Props> = ({
           setFuelingStart(null);
         }
       }
+      if (event.type === 'TRUCK_ASSIGNMENTS_UPDATED' && currentTruck) {
+        setAssignedCircuit(getAssignedExcavatorForTruck(currentTruck.id));
+      }
     });
 
     return () => {
@@ -720,6 +774,14 @@ export const DriverInCab: React.FC<Props> = ({
       unsubscribe();
     };
   }, [currentTruck]);
+
+  useEffect(() => {
+    if (currentTruck) {
+      setAssignedCircuit(getAssignedExcavatorForTruck(currentTruck.id));
+    } else {
+      setAssignedCircuit(null);
+    }
+  }, [currentTruck?.id]);
 
   // Handle Driver Login
   const handleLogin = (e?: React.FormEvent) => {
@@ -1230,11 +1292,30 @@ export const DriverInCab: React.FC<Props> = ({
                   {isOnline ? 'أونلاين' : 'أوفلاين محلي'}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                الدنبر: <strong className="text-slate-100 font-mono text-sm">{currentTruck.id}</strong> (152 طن)
-                {' · '}
-                بدء الوردية: <span className="font-mono text-slate-300">{shiftStartTime?.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+              <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                <span>الدنبر: <strong className="text-slate-100 font-mono text-sm">{currentTruck.id}</strong> (152 طن)</span>
+                <span aria-hidden="true">·</span>
+                <span>بدء الوردية: <span className="font-mono text-slate-300">{shiftStartTime?.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span></span>
               </p>
+
+              {/* Truck Excavator Fleet Circuit Assignment Badge */}
+              {assignedCircuit ? (
+                <div className="mt-1.5 inline-flex items-center gap-1.5 py-1 px-2.5 rounded-xl bg-gradient-to-r from-amber-500/25 to-amber-600/15 border border-amber-500/60 text-amber-300 text-xs font-bold shadow-sm">
+                  <span className="text-sm">🚜</span>
+                  <span>الحفار المخصص لك:</span>
+                  <span className="font-mono font-black text-amber-300 bg-amber-950/90 px-2 py-0.5 rounded-lg border border-amber-500/50 text-xs">
+                    {assignedCircuit.excavatorId}
+                  </span>
+                  {assignedCircuit.targetBench && (
+                    <span className="text-[11px] text-amber-200">({assignedCircuit.targetBench})</span>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-1 inline-flex items-center gap-1 py-0.5 px-2 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-400 text-[11px]">
+                  <span>🚜 التحميل:</span>
+                  <span className="text-slate-300">حر / حسب توجيه الدسباتش</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1902,6 +1983,7 @@ export const DriverInCab: React.FC<Props> = ({
               const typeLabel = isOthers ? 'تحميل آخر' : isShovel ? 'شوڤل' : isLoader ? 'لودر' : 'حفار';
               const inactive = isExcavatorInactive(ex);
               const statusLabel = getExcavatorStatusLabel(ex);
+              const isAssignedToThisTruck = assignedCircuit?.excavatorId === ex.id;
 
               return (
                 <button
@@ -1910,6 +1992,8 @@ export const DriverInCab: React.FC<Props> = ({
                   className={`group p-4 md:p-5 rounded-2xl border-2 text-center flex flex-col items-center justify-center shadow-xl active:scale-95 cursor-pointer min-h-[115px] transition-all relative overflow-hidden ${
                     inactive
                       ? 'bg-rose-950/40 border-rose-500/80 hover:border-rose-400 hover:bg-rose-900/50'
+                      : isAssignedToThisTruck
+                      ? 'bg-amber-950/60 border-amber-400 ring-4 ring-amber-400/40 shadow-amber-500/30 hover:bg-amber-900/70 scale-102 z-10'
                       : isOthers
                       ? 'bg-slate-900 border-amber-500/80 hover:border-amber-400 hover:bg-amber-950/30'
                       : 'bg-slate-900 border-emerald-500/50 hover:border-emerald-400 hover:bg-slate-800/90'
@@ -1922,14 +2006,20 @@ export const DriverInCab: React.FC<Props> = ({
                     </div>
                   )}
 
+                  {!inactive && isAssignedToThisTruck && (
+                    <div className="absolute top-1.5 right-1.5 left-1.5 py-0.5 px-1 rounded-md bg-amber-500 text-slate-950 text-[10px] font-black tracking-tight flex items-center justify-center gap-1 shadow animate-pulse">
+                      <span>⭐ الحفار المخصص لك من الدسباتش</span>
+                    </div>
+                  )}
+
                   {/* Big Massive Number */}
                   <div className={`text-2xl md:text-3xl font-black font-mono tracking-wider group-hover:scale-105 transition-transform mb-1 ${
-                    inactive ? 'text-rose-200 line-through opacity-85 mt-3' : 'text-slate-50'
+                    inactive ? 'text-rose-200 line-through opacity-85 mt-3' : isAssignedToThisTruck ? 'text-amber-300 mt-2.5' : 'text-slate-50'
                   }`}>
                     {ex.id}
                   </div>
-                  <div className={`text-xs font-bold ${inactive ? 'text-rose-400' : isOthers ? 'text-amber-400' : 'text-emerald-400'}`}>
-                    {inactive ? '⚠️ اضغط للتفاصيل' : typeLabel}
+                  <div className={`text-xs font-bold ${inactive ? 'text-rose-400' : isAssignedToThisTruck ? 'text-amber-300 font-black' : isOthers ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {inactive ? '⚠️ اضغط للتفاصيل' : isAssignedToThisTruck ? `${typeLabel} (اضغط للاعتماد)` : typeLabel}
                   </div>
                 </button>
               );
@@ -2809,38 +2899,75 @@ export const DriverInCab: React.FC<Props> = ({
               </div>
             )}
 
-            <div className={`p-4 rounded-2xl bg-slate-950 border mb-5 shadow-inner ${
-              incomingDirectMessage.targetTruckId !== 'ALL'
-                ? 'border-indigo-500/50'
-                : 'border-amber-500/50'
-            }`}>
-              <div className="text-xs text-slate-400 mb-1 font-bold">نص التعليمات / المعلومة الموجهة لك:</div>
-              <p className="text-base md:text-lg font-black text-amber-300 leading-relaxed">
-                "{incomingDirectMessage.messageText}"
-              </p>
-              <div className="text-[11px] text-slate-500 mt-3 pt-2 border-t border-slate-800 flex justify-between">
-                <span>المرسل: {incomingDirectMessage.sender}</span>
-                <span>الموجه إليه: {incomingDirectMessage.targetTruckId === 'ALL' ? 'جميع الدنابر' : `دنبر ${incomingDirectMessage.targetTruckId} فقط`}</span>
-              </div>
-            </div>
+            {(() => {
+              const cleanText = incomingDirectMessage.messageText || '';
 
-            <button
-              type="button"
-              onClick={() => {
-                acknowledgeDispatcherMessage(incomingDirectMessage.id);
-                acknowledgeCloudMessage(
-                  incomingDirectMessage.id,
-                  currentDriver?.name || 'سائق'
-                );
-                setShowDirectMessageModal(false);
-                playClickSound();
-                showAlert('تم تأكيد استلام التعليمات وإشعار غرفة التحكم فوراً ✅', 'SUCCESS');
-              }}
-              className="w-full py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-base shadow-xl flex items-center justify-center gap-2 cursor-pointer active:scale-98 transition-transform"
-            >
-              <CheckCircle2 className="w-6 h-6" />
-              <span>استلمت ونفذت التعليمات ✅ (Acknowledge)</span>
-            </button>
+              return (
+                <>
+                  <div className={`p-4 rounded-2xl bg-slate-950 border mb-4 shadow-inner ${
+                    incomingDirectMessage.targetTruckId !== 'ALL'
+                      ? 'border-indigo-500/50'
+                      : 'border-amber-500/50'
+                  }`}>
+                    <div className="text-xs text-slate-400 mb-1 font-bold">نص التعليمات / المعلومة الموجهة لك:</div>
+                    <p className="text-base md:text-lg font-black text-amber-300 leading-relaxed">
+                      "{cleanText}"
+                    </p>
+                    <div className="text-[11px] text-slate-500 mt-3 pt-2 border-t border-slate-800 flex justify-between">
+                      <span>المرسل: {incomingDirectMessage.sender}</span>
+                      <span>الموجه إليه: {incomingDirectMessage.targetTruckId === 'ALL' ? 'جميع الدنابر' : `دنبر ${incomingDirectMessage.targetTruckId} فقط`}</span>
+                    </div>
+                  </div>
+
+                  {/* Audio Read-Aloud (Text-to-Speech) Button for Driver Accessibility */}
+                  <div className="mb-4">
+                    <button
+                      type="button"
+                      onClick={() => handleSpeakMessage(cleanText)}
+                      className={`w-full py-3 px-4 rounded-2xl border font-black text-xs md:text-sm flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer ${
+                        isSpeakingMessage
+                          ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-400 animate-pulse'
+                          : 'bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white border-indigo-400'
+                      }`}
+                    >
+                      {isSpeakingMessage ? (
+                        <>
+                          <VolumeX className="w-5 h-5 text-white" />
+                          <span>إيقاف القراءة الصوتية ⏹️</span>
+                        </>
+                      ) : (
+                        <>
+                          <Volume2 className="w-5 h-5 text-amber-300 animate-bounce" />
+                          <span>🔊 قراءة الرسالة صوتياً (استماع)</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+                        window.speechSynthesis.cancel();
+                      }
+                      setIsSpeakingMessage(false);
+                      acknowledgeDispatcherMessage(incomingDirectMessage.id);
+                      acknowledgeCloudMessage(
+                        incomingDirectMessage.id,
+                        currentDriver?.name || 'سائق'
+                      );
+                      setShowDirectMessageModal(false);
+                      playClickSound();
+                      showAlert('تم تأكيد استلام التعليمات وإشعار غرفة التحكم فوراً ✅', 'SUCCESS');
+                    }}
+                    className="w-full py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-base shadow-xl flex items-center justify-center gap-2 cursor-pointer active:scale-98 transition-transform"
+                  >
+                    <CheckCircle2 className="w-6 h-6" />
+                    <span>استلمت ونفذت التعليمات ✅ (Acknowledge)</span>
+                  </button>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}

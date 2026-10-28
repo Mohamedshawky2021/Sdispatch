@@ -237,33 +237,36 @@ export const PerformanceDashboard: React.FC<Props> = ({
   return (
     <div className="flex-1 bg-slate-950 text-slate-100 p-4 md:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full">
       {/* Active Dispatcher Strip & Prominent Logout */}
-      {activeDispatcher && (
+      {/* Active Dispatcher Strip & Prominent Logout */}
+      {onDispatcherLogout && (
         <div className="flex flex-wrap items-center justify-between gap-3 p-3 px-4 rounded-xl bg-slate-900 border border-amber-500/40 w-full shadow-inner">
           <div className="flex items-center gap-2.5">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
             <div>
               <span className="text-xs text-slate-400">الديسباتشر المسؤول عن تقارير الوردية: </span>
-              <strong className="text-sm font-black text-amber-400">{activeDispatcher.name}</strong>
-              <span className="mr-2 font-mono text-xs bg-slate-800 px-2 py-0.5 rounded text-slate-300 border border-slate-700">
-                كود: {activeDispatcher.code}
-              </span>
+              <strong className="text-sm font-black text-amber-400">
+                {activeDispatcher?.name || 'غرفة العمليات المركزية'}
+              </strong>
+              {activeDispatcher && (
+                <span className="mr-2 font-mono text-xs bg-slate-800 px-2 py-0.5 rounded text-slate-300 border border-slate-700">
+                  كود: {activeDispatcher.code}
+                </span>
+              )}
               <span className="mr-2 text-[11px] text-emerald-400 font-bold">
                 (تسجيل التقارير باسمه)
               </span>
             </div>
           </div>
 
-          {onDispatcherLogout && (
-            <button
-              type="button"
-              onClick={onDispatcherLogout}
-              className="py-2 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs md:text-sm flex items-center gap-2 shadow-lg shadow-rose-900/40 cursor-pointer active:scale-95 transition-all border border-rose-400"
-              title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>تسجيل خروج الديسباتشر 🚪</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onDispatcherLogout}
+            className="py-2 px-5 rounded-xl bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs md:text-sm flex items-center gap-2 shadow-xl shadow-rose-950/60 cursor-pointer active:scale-95 transition-all border-2 border-rose-400"
+            title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
+          >
+            <LogOut className="w-4 h-4 text-white" />
+            <span>تسجيل خروج الديسباتشر 🚪</span>
+          </button>
         </div>
       )}
 
@@ -373,6 +376,19 @@ export const PerformanceDashboard: React.FC<Props> = ({
               title="تحديث البيانات الفورية"
             >
               <RotateCcw className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Prominent Red Logout Button */}
+          {onDispatcherLogout && (
+            <button
+              type="button"
+              onClick={onDispatcherLogout}
+              className="py-2 px-3.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs flex items-center gap-1.5 shadow-lg shadow-rose-950/50 cursor-pointer active:scale-95 transition-all border border-rose-400"
+              title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
+            >
+              <LogOut className="w-4 h-4 text-white" />
+              <span>تسجيل خروج 🚪</span>
             </button>
           )}
         </div>

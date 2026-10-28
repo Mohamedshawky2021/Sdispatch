@@ -13,9 +13,10 @@ import {
   HardHat,
   Fuel,
   RefreshCw,
+  Wrench,
 } from 'lucide-react';
 import { TripLog, Truck, Excavator, FuelingLog, ProductionGapAlert } from '../types/dispatch';
-import { detectProductionGaps } from '../utils/storage';
+import { detectProductionGaps, getEquipmentInterventions } from '../utils/storage';
 import { playClickSound } from '../utils/audio';
 
 interface Props {
@@ -24,6 +25,7 @@ interface Props {
   excavators: Excavator[];
   activeFuelings: FuelingLog[];
   onSelectTruckForMessage?: (truckId: string) => void;
+  onOpenInterventions?: (unitId?: string) => void;
 }
 
 export const ProductionGapAlertsPanel: React.FC<Props> = ({
@@ -32,9 +34,11 @@ export const ProductionGapAlertsPanel: React.FC<Props> = ({
   excavators,
   activeFuelings,
   onSelectTruckForMessage,
+  onOpenInterventions,
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [dismissedAlertIds, setDismissedAlertIds] = useState<Record<string, boolean>>({});
+  const interventions = getEquipmentInterventions();
 
   // Compute live production gaps (> 15 mins delay)
   const allGaps = detectProductionGaps(trips, trucks, excavators, activeFuelings);
@@ -113,6 +117,22 @@ export const ProductionGapAlertsPanel: React.FC<Props> = ({
               <CheckCircle2 className="w-4 h-4" />
               لا توجد فجوات تشغيلية حالياً (كافة الوحدات منتظمة)
             </span>
+          )}
+
+          {onOpenInterventions && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                playClickSound();
+                onOpenInterventions();
+              }}
+              className="py-1 px-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="عرض وتوثيق الحلول والإجراءات الميدانية للتأخيرات"
+            >
+              <Wrench className="w-3.5 h-3.5 text-amber-400" />
+              <span>سجل الحلول ({interventions.length}) 🛠️</span>
+            </button>
           )}
 
           <button
@@ -206,7 +226,22 @@ export const ProductionGapAlertsPanel: React.FC<Props> = ({
                     </div>
 
                     {/* Action Buttons */}
-                    <div className="flex items-center gap-2 pt-1 border-t border-slate-800/60">
+                    <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-800/60">
+                      {onOpenInterventions && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            playClickSound();
+                            onOpenInterventions(gap.unitId);
+                          }}
+                          className="flex-1 py-1.5 px-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-sm"
+                          title="إضافة وتوثيق حل ميداني لهذه المعدة"
+                        >
+                          <Wrench className="w-3.5 h-3.5" />
+                          <span>إضافة حل يدوي 🛠️</span>
+                        </button>
+                      )}
+
                       {gap.unitType === 'TRUCK' && onSelectTruckForMessage && (
                         <button
                           type="button"
@@ -217,17 +252,17 @@ export const ProductionGapAlertsPanel: React.FC<Props> = ({
                           className="flex-1 py-1.5 px-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-1 cursor-pointer transition-colors"
                         >
                           <Radio className="w-3.5 h-3.5" />
-                          <span>توجيه رسالة خاصة للسائق 🔒</span>
+                          <span>توجيه رسالة 🔒</span>
                         </button>
                       )}
 
                       <button
                         type="button"
                         onClick={() => handleDismiss(gap.id)}
-                        className="flex-1 py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-emerald-950 hover:text-emerald-300 hover:border-emerald-500/40 border border-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                        className="py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-emerald-950 hover:text-emerald-300 hover:border-emerald-500/40 border border-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-1 transition-colors cursor-pointer"
                       >
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>معالجة وتأكيد الحل</span>
+                        <span>إغلاق التنبيه</span>
                       </button>
                     </div>
 

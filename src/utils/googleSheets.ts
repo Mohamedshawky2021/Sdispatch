@@ -26,6 +26,8 @@ import {
   getStoredDumps,
   getFuelingLogs,
   getDriverSessions,
+  getEquipmentInterventions,
+  getTruckExcavatorAssignments,
 } from './storage';
 
 // Ensure Firebase is initialized only once
@@ -286,6 +288,18 @@ export async function createMiningSpreadsheet(
       {
         properties: {
           title: 'أسطول وحالات المعدات (Status)',
+          gridProperties: { rowCount: 200, columnCount: 10 },
+        },
+      },
+      {
+        properties: {
+          title: 'سجل الحلول والإجراءات (Interventions)',
+          gridProperties: { rowCount: 300, columnCount: 12 },
+        },
+      },
+      {
+        properties: {
+          title: 'توزيع الأسطول على الحفارات (Circuit)',
           gridProperties: { rowCount: 200, columnCount: 10 },
         },
       },
@@ -560,7 +574,61 @@ export async function syncAllDataToGoogleSheet(
       `مادة التحميل: ${getMaterialArabic(e.assignedMaterial)}`,
     ]);
 
-    // Execute Batch Updates to all 6 Sheets
+    // 7. Equipment Interventions & Manual Corrective Actions
+    const interventions = getEquipmentInterventions();
+    const interventionsHeader = [
+      'كود الإجراء (ID)',
+      'المعدة / الدنبر',
+      'نوع المعدة',
+      'وصف الفجوة / التأخير',
+      'الحل والإجراء التصحيحي المقترح',
+      'مقترح الحل (الاسم والكود)',
+      'وقت الاقتراح',
+      'حالة الاعتماد',
+      'معتمد الحل (الاسم والكود)',
+      'وقت الاعتماد',
+      'الطن المستعاد التقديري',
+      'ملاحظات إضافية',
+    ];
+    const interventionsRows = interventions.map(inv => [
+      inv.id,
+      inv.equipmentId,
+      inv.equipmentType === 'TRUCK' ? 'دنبر نقل 152t' : 'حفار / شوڤل تحميل',
+      inv.problemDescription,
+      inv.proposedAction,
+      `${inv.proposedByDispatcherName} (${inv.proposedByDispatcherCode})`,
+      new Date(inv.proposedAt).toLocaleString('ar-EG'),
+      inv.status === 'APPROVED' ? 'معتمد رسمياً ✅' : inv.status === 'RESOLVED' ? 'تم الحل بنجاح 🟢' : 'قيد المراجعة ⏳',
+      inv.approvedByDispatcherName ? `${inv.approvedByDispatcherName} (${inv.approvedByDispatcherCode || ''})` : '-',
+      inv.approvedAt ? new Date(inv.approvedAt).toLocaleString('ar-EG') : '-',
+      inv.estimatedTonsRecovered || 0,
+      inv.notes || '',
+    ]);
+
+    // 8. Dynamic Truck-to-Excavator Circuit Assignments
+    const assignmentsMap = getTruckExcavatorAssignments();
+    const assignmentsHeader = [
+      'رقم الدنبر (Truck ID)',
+      'الحفار المخصص (Excavator ID)',
+      'مصطبة العمل المستهدفة',
+      'نوع الخام المستهدف',
+      'الديسباتشر المسؤول عن التوزيع',
+      'كود الديسباتشر',
+      'توقيت التوزيع والربط',
+      'ملاحظات المسار',
+    ];
+    const assignmentsRows = Object.values(assignmentsMap).map(asg => [
+      asg.truckId,
+      asg.excavatorId,
+      asg.targetBench || '-',
+      asg.targetMaterial || 'حسب التوجيه',
+      asg.assignedByDispatcherName || 'غرفة العمليات',
+      asg.assignedByDispatcherCode || '-',
+      new Date(asg.assignedAt).toLocaleString('ar-EG'),
+      asg.notes || '',
+    ]);
+
+    // Execute Batch Updates to all 8 Sheets
     const updateData = [
       {
         range: "'ملخص الإنتاج والوردية'!A1",
@@ -585,6 +653,14 @@ export async function syncAllDataToGoogleSheet(
       {
         range: "'أسطول وحالات المعدات (Status)'!A1",
         values: [equipmentHeader, ...truckRows, ...excavatorRows],
+      },
+      {
+        range: "'سجل الحلول والإجراءات (Interventions)'!A1",
+        values: [interventionsHeader, ...interventionsRows],
+      },
+      {
+        range: "'توزيع الأسطول على الحفارات (Circuit)'!A1",
+        values: [assignmentsHeader, ...assignmentsRows],
       },
     ];
 

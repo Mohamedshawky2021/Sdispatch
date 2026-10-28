@@ -24,8 +24,11 @@ import {
   TripLog,
   FuelingLog,
   DriverSessionRecord,
+  EquipmentIntervention,
+  TruckExcavatorAssignment,
 } from '../types/dispatch';
 import { encryptData, decryptData } from './cryptoSecurity';
+export { encryptData, decryptData };
 
 // Ensure Firebase is initialized
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -232,13 +235,31 @@ export function listenForUnitMessages(
 
     return onSnapshot(
       q,
-      (snapshot) => {
-        const cloudMessages: DispatcherDirectMessage[] = [];
+      async (snapshot) => {
+        const rawMessages: DispatcherDirectMessage[] = [];
         snapshot.forEach((d) => {
-          cloudMessages.push(d.data() as DispatcherDirectMessage);
+          rawMessages.push(d.data() as DispatcherDirectMessage);
         });
 
-        // Sync directly into local storage on this tablet
+        // End-to-End Decryption of messageText for each message arriving at the driver's tablet
+        const cloudMessages = await Promise.all(
+          rawMessages.map(async (m) => {
+            let clearText = m.messageText;
+            try {
+              if (clearText && (clearText.startsWith('U2FsdGVkX1') || (m as any).encrypted)) {
+                clearText = await decryptData<string>(clearText);
+              }
+            } catch {
+              // already plaintext or fallback
+            }
+            return {
+              ...m,
+              messageText: clearText,
+            };
+          })
+        );
+
+        // Sync decrypted messages directly into local storage on this tablet
         if (typeof window !== 'undefined' && cloudMessages.length > 0) {
           try {
             const raw = localStorage.getItem('sukari_direct_messages_v2') || '[]';
@@ -872,7 +893,7 @@ export interface MasterDataPayload<T = any> {
 }
 
 export async function syncMasterDataToCloud(
-  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings' | 'dispatchers',
+  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings' | 'dispatchers' | 'truck_excavator_assignments',
   data: any,
   updatedBy: string = 'Admin'
 ): Promise<void> {
@@ -891,7 +912,7 @@ export async function syncMasterDataToCloud(
 }
 
 export async function fetchMasterDataFromCloud(
-  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings' | 'dispatchers'
+  docId: 'trucks' | 'excavators' | 'dumps' | 'drivers' | 'custom_standby_reasons' | 'app_config' | 'parkings' | 'dispatchers' | 'truck_excavator_assignments'
 ): Promise<any | null> {
   const path = `admin_master_data/${docId}`;
   try {
@@ -903,6 +924,47 @@ export async function fetchMasterDataFromCloud(
     handleFirestoreError(err, OperationType.GET, path);
   }
   return null;
+}
+
+// ----------------------------------------------------------------------
+// 4c-7. Real-Time Equipment Interventions & Solutions Sync (/equipment_interventions)
+// ----------------------------------------------------------------------
+export async function syncInterventionToCloud(intervention: EquipmentIntervention): Promise<void> {
+  if (!intervention || !intervention.id) return;
+  const path = `equipment_interventions/${intervention.id}`;
+  try {
+    const cleanDoc = Object.fromEntries(
+      Object.entries(intervention).filter(([_, v]) => v !== undefined)
+    );
+    await setDoc(doc(db, 'equipment_interventions', intervention.id), cleanDoc, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeToEquipmentInterventions(
+  callback: (interventions: EquipmentIntervention[]) => void
+): Unsubscribe {
+  const path = 'equipment_interventions';
+  try {
+    const q = query(collection(db, path), orderBy('proposedAt', 'desc'), limit(100));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: EquipmentIntervention[] = [];
+        snapshot.forEach((d) => {
+          list.push(d.data() as EquipmentIntervention);
+        });
+        callback(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, path);
+      }
+    );
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, path);
+    return () => {};
+  }
 }
 
 export function subscribeToMasterData(

@@ -19,6 +19,8 @@ import {
   CustomStandbyReason,
   ParkingLocation,
   DispatcherUser,
+  EquipmentIntervention,
+  TruckExcavatorAssignment,
 } from '../types/dispatch';
 import {
   sendCloudDispatcherMessage,
@@ -46,6 +48,8 @@ import {
   StandbyCloudEvent,
   sendEmergencySos,
   EmergencySosAlert,
+  syncInterventionToCloud,
+  subscribeToEquipmentInterventions,
 } from './firebaseSync';
 
 const STORAGE_KEYS = {
@@ -74,6 +78,8 @@ const STORAGE_KEYS = {
   PARKINGS: 'sukari_parkings_v2',
   DISPATCHERS: 'sukari_dispatchers_v2',
   ACTIVE_DISPATCHER: 'sukari_active_dispatcher_v2',
+  EQUIPMENT_INTERVENTIONS: 'sukari_equipment_interventions_v1',
+  TRUCK_EXCAVATOR_ASSIGNMENTS: 'sukari_truck_excavator_assignments_v1',
 };
 
 export interface HourlyExportSnapshot {
@@ -465,6 +471,183 @@ export function changeMasterAdminPin(newPin: string): boolean {
   saveAppConfig(config);
   return true;
 }
+
+// ==========================================
+// 1. EQUIPMENT INTERVENTIONS & DELAY CORRECTIVE ACTIONS
+// ==========================================
+
+export function getEquipmentInterventions(): EquipmentIntervention[] {
+  if (typeof window === 'undefined') return [];
+  const raw = localStorage.getItem(STORAGE_KEYS.EQUIPMENT_INTERVENTIONS);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export function saveEquipmentInterventions(interventions: EquipmentIntervention[]) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEYS.EQUIPMENT_INTERVENTIONS, JSON.stringify(interventions));
+  broadcastDataChange('EQUIPMENT_INTERVENTIONS_UPDATED', interventions);
+}
+
+export function addEquipmentIntervention(data: {
+  equipmentId: string;
+  equipmentType: 'TRUCK' | 'EXCAVATOR';
+  problemDescription: string;
+  proposedAction: string;
+  proposedByDispatcherName: string;
+  proposedByDispatcherCode: string;
+  notes?: string;
+  estimatedTonsRecovered?: number;
+  autoApprove?: boolean;
+}): EquipmentIntervention {
+  const current = getEquipmentInterventions();
+  const id = `ACT-${data.equipmentId}-${Date.now().toString(36)}`;
+  const now = new Date().toISOString();
+
+  const newIntervention: EquipmentIntervention = {
+    id,
+    equipmentId: data.equipmentId,
+    equipmentType: data.equipmentType,
+    problemDescription: data.problemDescription,
+    proposedAction: data.proposedAction,
+    proposedByDispatcherName: data.proposedByDispatcherName,
+    proposedByDispatcherCode: data.proposedByDispatcherCode,
+    proposedAt: now,
+    status: data.autoApprove ? 'APPROVED' : 'PROPOSED',
+    approvedByDispatcherName: data.autoApprove ? data.proposedByDispatcherName : undefined,
+    approvedByDispatcherCode: data.autoApprove ? data.proposedByDispatcherCode : undefined,
+    approvedAt: data.autoApprove ? now : undefined,
+    notes: data.notes,
+    estimatedTonsRecovered: data.estimatedTonsRecovered || 152,
+  };
+
+  const updated = [newIntervention, ...current.slice(0, 99)];
+  saveEquipmentInterventions(updated);
+  syncInterventionToCloud(newIntervention).catch(console.error);
+
+  return newIntervention;
+}
+
+export function approveEquipmentIntervention(
+  id: string,
+  approverName: string,
+  approverCode: string
+): boolean {
+  const current = getEquipmentInterventions();
+  let updatedIntervention: EquipmentIntervention | null = null;
+  const now = new Date().toISOString();
+
+  const updated = current.map((item) => {
+    if (item.id === id) {
+      updatedIntervention = {
+        ...item,
+        status: 'APPROVED' as const,
+        approvedByDispatcherName: approverName,
+        approvedByDispatcherCode: approverCode,
+        approvedAt: now,
+      };
+      return updatedIntervention;
+    }
+    return item;
+  });
+
+  if (updatedIntervention) {
+    saveEquipmentInterventions(updated);
+    syncInterventionToCloud(updatedIntervention).catch(console.error);
+    return true;
+  }
+  return false;
+}
+
+export function resolveEquipmentIntervention(id: string): boolean {
+  const current = getEquipmentInterventions();
+  let updatedIntervention: EquipmentIntervention | null = null;
+
+  const updated = current.map((item) => {
+    if (item.id === id) {
+      updatedIntervention = {
+        ...item,
+        status: 'RESOLVED' as const,
+      };
+      return updatedIntervention;
+    }
+    return item;
+  });
+
+  if (updatedIntervention) {
+    saveEquipmentInterventions(updated);
+    syncInterventionToCloud(updatedIntervention).catch(console.error);
+    return true;
+  }
+  return false;
+}
+
+// ==========================================
+// 2. DYNAMIC TRUCK-TO-EXCAVATOR FLEET ASSIGNMENT
+// ==========================================
+
+export function getTruckExcavatorAssignments(): Record<string, TruckExcavatorAssignment> {
+  if (typeof window === 'undefined') return {};
+  const raw = localStorage.getItem(STORAGE_KEYS.TRUCK_EXCAVATOR_ASSIGNMENTS);
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+export function saveTruckExcavatorAssignments(map: Record<string, TruckExcavatorAssignment>) {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEYS.TRUCK_EXCAVATOR_ASSIGNMENTS, JSON.stringify(map));
+  broadcastDataChange('TRUCK_ASSIGNMENTS_UPDATED', map);
+  syncMasterDataToCloud('truck_excavator_assignments', map);
+}
+
+export function assignTrucksToExcavator(
+  truckIds: string[],
+  excavatorId: string,
+  dispatcherName?: string,
+  dispatcherCode?: string,
+  targetBench?: string,
+  targetMaterial?: MaterialType,
+  notes?: string
+) {
+  const current = getTruckExcavatorAssignments();
+  const now = new Date().toISOString();
+
+  // If excavatorId is EMPTY / 'UNASSIGNED', remove those trucks
+  if (!excavatorId || excavatorId === 'UNASSIGNED') {
+    truckIds.forEach(id => {
+      delete current[id];
+    });
+  } else {
+    truckIds.forEach(id => {
+      current[id] = {
+        truckId: id,
+        excavatorId,
+        assignedAt: now,
+        assignedByDispatcherName: dispatcherName,
+        assignedByDispatcherCode: dispatcherCode,
+        targetBench,
+        targetMaterial,
+        notes,
+      };
+    });
+  }
+
+  saveTruckExcavatorAssignments(current);
+}
+
+export function getAssignedExcavatorForTruck(truckId: string): TruckExcavatorAssignment | null {
+  const map = getTruckExcavatorAssignments();
+  return map[truckId] || null;
+}
+
 
 export function getStoredTrucks(): Truck[] {
   if (typeof window === 'undefined') return INITIAL_TRUCKS;
@@ -1211,7 +1394,14 @@ ${truckLines || '• لم تُسجل نقلات خلال هذه الساعة'}
 • إجمالي الأطنان التراكمية: *${snapshot.cumulativeShiftTonnes.toLocaleString()} طن*
 
 ⚠️ *الأعطال والحالات الطارئة:* ${snapshot.activeBreakdownsCount || 0} معدة متوقفة للصيانة
-━━━━━━━━━━━━━━━━━━━━
+${(() => {
+  const acts = getEquipmentInterventions().filter(i => i.status === 'APPROVED' || i.status === 'RESOLVED');
+  if (acts.length === 0) return '';
+  const lines = acts.slice(0, 4).map(i =>
+    `• *${i.equipmentId}:* ${i.problemDescription} ➔ *الإجراء:* ${i.proposedAction} (مقترح: ${i.proposedByDispatcherName} / معتمد: ${i.approvedByDispatcherName || 'المشرف'})`
+  ).join('\n');
+  return `\n🛠️ *الإجراءات التصحيحية والحلول الميدانية المعتمدة:*\n${lines}\n`;
+})()}━━━━━━━━━━━━━━━━━━━━
 📡 _نسخة رقمية مطابقة لتقرير الإكسيل الساعي — أوتوماتيك لجروب الواتساب_`;
 }
 
@@ -2328,6 +2518,15 @@ export async function pullCloudMasterData(): Promise<{ success: boolean; syncedI
       }
     } catch {}
 
+    try {
+      const assignments = await fetchMasterDataFromCloud('truck_excavator_assignments');
+      if (assignments && typeof assignments === 'object') {
+        localStorage.setItem(STORAGE_KEYS.TRUCK_EXCAVATOR_ASSIGNMENTS, JSON.stringify(assignments));
+        broadcastDataChange('TRUCK_ASSIGNMENTS_UPDATED', assignments);
+        syncedItems.push('truck_excavator_assignments');
+      }
+    } catch {}
+
     return { success: true, syncedItems };
   } catch (err) {
     console.warn('Failed to pull master data from cloud:', err);
@@ -2380,6 +2579,9 @@ if (typeof window !== 'undefined') {
       } else if (docId === 'app_config' && data) {
         localStorage.setItem(STORAGE_KEYS.CONFIG, JSON.stringify(data));
         broadcastDataChange('CONFIG_UPDATED', data);
+      } else if (docId === 'truck_excavator_assignments' && data) {
+        localStorage.setItem(STORAGE_KEYS.TRUCK_EXCAVATOR_ASSIGNMENTS, JSON.stringify(data));
+        broadcastDataChange('TRUCK_ASSIGNMENTS_UPDATED', data);
       }
     } catch (e) {
       console.warn('Error applying cloud master data update in background:', e);
@@ -2484,6 +2686,18 @@ if (typeof window !== 'undefined') {
       }
     } catch (e) {
       console.warn('Error applying cloud driver sessions update:', e);
+    }
+  });
+
+  // 7. Real-time equipment interventions & corrective actions
+  subscribeToEquipmentInterventions((cloudInterventions) => {
+    try {
+      if (cloudInterventions && Array.isArray(cloudInterventions) && cloudInterventions.length > 0) {
+        localStorage.setItem(STORAGE_KEYS.EQUIPMENT_INTERVENTIONS, JSON.stringify(cloudInterventions));
+        broadcastDataChange('EQUIPMENT_INTERVENTIONS_UPDATED', cloudInterventions);
+      }
+    } catch (e) {
+      console.warn('Error applying equipment interventions update:', e);
     }
   });
 }

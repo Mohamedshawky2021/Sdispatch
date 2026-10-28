@@ -260,3 +260,32 @@ export interface DispatcherUser {
   lastLoginAt?: string;
 }
 
+export interface EquipmentIntervention {
+  id: string;
+  equipmentId: string; // e.g. 'DT014', 'EX08'
+  equipmentType: 'TRUCK' | 'EXCAVATOR';
+  problemDescription: string;
+  proposedAction: string;
+  proposedByDispatcherName: string;
+  proposedByDispatcherCode: string;
+  proposedAt: string; // ISO string
+  status: 'PROPOSED' | 'APPROVED' | 'IN_PROGRESS' | 'RESOLVED';
+  approvedByDispatcherName?: string;
+  approvedByDispatcherCode?: string;
+  approvedAt?: string;
+  notes?: string;
+  estimatedTonsRecovered?: number;
+}
+
+export interface TruckExcavatorAssignment {
+  truckId: string; // e.g. 'DT001'
+  excavatorId: string; // e.g. 'EX08'
+  assignedAt: string; // ISO string
+  assignedByDispatcherName?: string;
+  assignedByDispatcherCode?: string;
+  targetBench?: string;
+  targetMaterial?: MaterialType;
+  notes?: string;
+}
+
+

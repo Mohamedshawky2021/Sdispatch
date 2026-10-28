@@ -47,6 +47,8 @@ import {
   saveCustomTrucksOrder,
   getCustomExcavatorsOrder,
   saveCustomExcavatorsOrder,
+  getTruckExcavatorAssignments,
+  getEquipmentInterventions,
 } from '../utils/storage';
 import { playClickSound, playDispatchAlertSound } from '../utils/audio';
 import { getStoredSheetsConfig, GoogleSheetsConfig } from '../utils/googleSheets';
@@ -58,6 +60,9 @@ import { ExcavatorTargetsModal } from './ExcavatorTargetsModal';
 import { GoogleSheetsModal } from './GoogleSheetsModal';
 import { ProductivityChartsTab } from './ProductivityChartsTab';
 import { ShiftManagementModal } from './ShiftManagementModal';
+import { TruckExcavatorAssignmentModal } from './TruckExcavatorAssignmentModal';
+import { InterventionsModal } from './InterventionsModal';
+import { DispatcherMessengerModal } from './DispatcherMessengerModal';
 import {
   subscribeToEquipmentPresence,
   EquipmentPresenceInfo,
@@ -126,6 +131,12 @@ export const DispatcherControlRoom: React.FC<Props> = ({
 
   // New modules states
   const [selectedTruckForMessage, setSelectedTruckForMessage] = useState<string | null>(null);
+  const [isMessengerModalOpen, setIsMessengerModalOpen] = useState(false);
+  const [isAssignmentModalOpen, setIsAssignmentModalOpen] = useState(false);
+  const [isInterventionsModalOpen, setIsInterventionsModalOpen] = useState(false);
+  const [interventionPreselectedUnitId, setInterventionPreselectedUnitId] = useState<string | null>(null);
+  const [interventionsList, setInterventionsList] = useState(getEquipmentInterventions());
+  const [truckAssignments, setTruckAssignments] = useState(getTruckExcavatorAssignments());
   const [isTargetsModalOpen, setIsTargetsModalOpen] = useState(false);
   const [isGoogleSheetsModalOpen, setIsGoogleSheetsModalOpen] = useState(false);
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
@@ -179,6 +190,12 @@ export const DispatcherControlRoom: React.FC<Props> = ({
       }
       if (event.type === 'GOOGLE_SHEETS_CONFIG_UPDATED') {
         setSheetsConfig(getStoredSheetsConfig());
+      }
+      if (event.type === 'EQUIPMENT_INTERVENTIONS_UPDATED') {
+        setInterventionsList(getEquipmentInterventions());
+      }
+      if (event.type === 'TRUCK_ASSIGNMENTS_UPDATED') {
+        setTruckAssignments(getTruckExcavatorAssignments());
       }
     });
 
@@ -435,35 +452,37 @@ export const DispatcherControlRoom: React.FC<Props> = ({
       {/* Top Banner & Quick Controls */}
       <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
         {/* Active Dispatcher Info & Prominent Logout Strip */}
-        {activeDispatcher && (
-          <div className="flex flex-wrap items-center justify-between gap-3 p-3 px-4 rounded-xl bg-slate-950 border border-amber-500/40 w-full shadow-inner">
-            <div className="flex items-center gap-2.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-              <div>
-                <span className="text-xs text-slate-400">الديسباتشر المناوب المسجل: </span>
-                <strong className="text-sm font-black text-amber-400">{activeDispatcher.name}</strong>
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 px-4 rounded-xl bg-slate-950 border border-amber-500/40 w-full shadow-inner">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+            <div>
+              <span className="text-xs text-slate-400">الديسباتشر المسؤول: </span>
+              <strong className="text-sm font-black text-amber-400">
+                {activeDispatcher?.name || 'غرفة العمليات المركزية'}
+              </strong>
+              {activeDispatcher && (
                 <span className="mr-2 font-mono text-xs bg-slate-800 px-2 py-0.5 rounded text-slate-300 border border-slate-700">
                   كود: {activeDispatcher.code}
                 </span>
-                <span className="mr-2 text-[11px] text-emerald-400 font-bold">
-                  (التقارير والشيتات تصدر باسمه)
-                </span>
-              </div>
+              )}
+              <span className="mr-2 text-[11px] text-emerald-400 font-bold">
+                (تسجيل التقارير والشيتات باسمه)
+              </span>
             </div>
-
-            {onDispatcherLogout && (
-              <button
-                type="button"
-                onClick={onDispatcherLogout}
-                className="py-2 px-4 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs md:text-sm flex items-center gap-2 shadow-lg shadow-rose-900/40 cursor-pointer active:scale-95 transition-all border border-rose-400"
-                title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>تسجيل خروج الديسباتشر 🚪</span>
-              </button>
-            )}
           </div>
-        )}
+
+          {onDispatcherLogout && (
+            <button
+              type="button"
+              onClick={onDispatcherLogout}
+              className="py-2 px-5 rounded-xl bg-gradient-to-r from-rose-600 via-red-600 to-rose-700 hover:from-rose-500 hover:to-red-500 text-white font-black text-xs md:text-sm flex items-center gap-2 shadow-xl shadow-rose-950/60 cursor-pointer active:scale-95 transition-all border-2 border-rose-400"
+              title="تسجيل خروج الديسباتشر والعودة لشاشة السائق"
+            >
+              <LogOut className="w-4 h-4 text-white" />
+              <span>تسجيل خروج الديسباتشر 🚪</span>
+            </button>
+          )}
+        </div>
 
         <div>
           <div className="flex items-center gap-2">
@@ -481,6 +500,51 @@ export const DispatcherControlRoom: React.FC<Props> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Dispatcher Direct Messenger Button */}
+          <button
+            type="button"
+            onClick={() => {
+              playClickSound();
+              setIsMessengerModalOpen(true);
+            }}
+            className="py-2 px-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-black text-xs flex items-center gap-1.5 transition-all shadow-md cursor-pointer border border-indigo-400"
+            title="إرسال رسائل وتعليمات فورية مشفرة بكابينة السائق مع تلاوة صوتية"
+          >
+            <span>💬 رسائل الدنابر والأسطول</span>
+          </button>
+
+          {/* Dynamic Truck-to-Excavator Fleet Assignment Button */}
+          <button
+            type="button"
+            onClick={() => {
+              playClickSound();
+              setIsAssignmentModalOpen(true);
+            }}
+            className="py-2 px-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs flex items-center gap-1.5 transition-all shadow-md cursor-pointer border border-amber-300"
+            title="توزيع أسطول الدنابر على الحفارات وإظهار الحفار في تابلت السائق"
+          >
+            <span>🚜 توزيع الأسطول على الحفارات</span>
+          </button>
+
+          {/* Equipment Interventions & Manual Corrective Actions Button */}
+          <button
+            type="button"
+            onClick={() => {
+              playClickSound();
+              setInterventionPreselectedUnitId(null);
+              setIsInterventionsModalOpen(true);
+            }}
+            className="py-2 px-3.5 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-black text-xs flex items-center gap-1.5 transition-all shadow-md cursor-pointer border border-teal-400"
+            title="سجل الحلول والإجراءات الميدانية للمعدات المتأخرة وتوثيق من اقترح ومن اعتمد"
+          >
+            <span>🛠️ سجل الحلول والإجراءات</span>
+            {interventionsList.length > 0 && (
+              <span className="py-0.5 px-1.5 rounded-full bg-slate-950 text-teal-300 font-mono text-[10px]">
+                {interventionsList.length}
+              </span>
+            )}
+          </button>
+
           {/* Equipment Status Alerts Button */}
           <button
             onClick={onOpenEquipmentAlerts}
@@ -600,7 +664,14 @@ export const DispatcherControlRoom: React.FC<Props> = ({
         trucks={trucks}
         excavators={excavators}
         activeFuelings={activeFuelings}
-        onSelectTruckForMessage={(truckId) => setSelectedTruckForMessage(truckId)}
+        onSelectTruckForMessage={(truckId) => {
+          setSelectedTruckForMessage(truckId);
+          setIsMessengerModalOpen(true);
+        }}
+        onOpenInterventions={(unitId) => {
+          setInterventionPreselectedUnitId(unitId || null);
+          setIsInterventionsModalOpen(true);
+        }}
       />
 
       {/* FUELING MONITORING PANEL */}
@@ -1005,8 +1076,15 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                             {isBreakdown ? 'عطل 🚨' : isFueling ? 'بيفول ⛽' : isStandby ? 'انتظار ⏳' : isMaint ? 'صيانة 🔧' : 'شغال 🟢'}
                           </span>
                         </div>
-                        <div className="text-[10px] text-slate-300 truncate font-medium">
-                          {truck.statusNote || (truck.assignedDriver ? `سائق: ${truck.assignedDriver}` : `${truck.capacityTonnes} طن · CAT 785`)}
+                        <div className="text-[10px] text-slate-300 truncate font-medium flex items-center justify-between gap-1">
+                          <span className="truncate">
+                            {truck.statusNote || (truck.assignedDriver ? `سائق: ${truck.assignedDriver}` : `${truck.capacityTonnes} طن · CAT 785`)}
+                          </span>
+                          {truckAssignments[truck.id] && (
+                            <span className="shrink-0 text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              🚜 {truckAssignments[truck.id].excavatorId}
+                            </span>
+                          )}
                         </div>
                         <div className="mt-1.5 pt-1 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
                           <span className="text-slate-400">حمولات: <strong className="font-bold font-mono text-emerald-400">{truck.tripsToday || 0}</strong> ({truck.tonnesToday || 0}t)</span>
@@ -1014,9 +1092,11 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              playClickSound();
                               setSelectedTruckForMessage(truck.id);
+                              setIsMessengerModalOpen(true);
                             }}
-                            className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold px-1.5 py-0.5 rounded bg-indigo-950/50 border border-indigo-500/30 transition-colors"
+                            className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold px-2 py-0.5 rounded bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-500/40 transition-colors cursor-pointer"
                             title="إرسال رسالة خاصة لهذا الدنبر"
                           >
                             رسالة 💬
@@ -1268,6 +1348,43 @@ export const DispatcherControlRoom: React.FC<Props> = ({
         trucks={trucks}
         excavators={excavators}
         drivers={drivers}
+      />
+
+      {/* DISPATCHER MESSENGER POPUP MODAL */}
+      <DispatcherMessengerModal
+        isOpen={isMessengerModalOpen}
+        onClose={() => {
+          setIsMessengerModalOpen(false);
+          setSelectedTruckForMessage(null);
+        }}
+        trucks={trucks}
+        drivers={drivers}
+        preselectedTruckId={selectedTruckForMessage}
+        onClearPreselectedTruck={() => setSelectedTruckForMessage(null)}
+      />
+
+      {/* TRUCK-TO-EXCAVATOR FLEET CIRCUIT ASSIGNMENT MODAL */}
+      <TruckExcavatorAssignmentModal
+        isOpen={isAssignmentModalOpen}
+        onClose={() => setIsAssignmentModalOpen(false)}
+        excavators={excavators}
+        trucks={trucks}
+        activeDispatcher={activeDispatcher}
+        onAssignmentsUpdated={() => setTruckAssignments(getTruckExcavatorAssignments())}
+      />
+
+      {/* EQUIPMENT INTERVENTIONS & MANUAL CORRECTIVE ACTIONS MODAL */}
+      <InterventionsModal
+        isOpen={isInterventionsModalOpen}
+        onClose={() => {
+          setIsInterventionsModalOpen(false);
+          setInterventionPreselectedUnitId(null);
+        }}
+        trucks={trucks}
+        excavators={excavators}
+        activeDispatcher={activeDispatcher}
+        preselectedUnitId={interventionPreselectedUnitId}
+        onInterventionsChanged={() => setInterventionsList(getEquipmentInterventions())}
       />
     </div>
   );
