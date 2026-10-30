@@ -648,6 +648,26 @@ export function getAssignedExcavatorForTruck(truckId: string): TruckExcavatorAss
   return map[truckId] || null;
 }
 
+export function assignSingleTruckToExcavator(
+  truckId: string,
+  excavatorId: string,
+  dispatcherName?: string,
+  dispatcherCode?: string,
+  targetBench?: string,
+  targetMaterial?: MaterialType,
+  notes?: string
+) {
+  assignTrucksToExcavator([truckId], excavatorId, dispatcherName, dispatcherCode, targetBench, targetMaterial, notes);
+}
+
+export function getTrucksAssignedToExcavator(excavatorId: string): string[] {
+  const map = getTruckExcavatorAssignments();
+  return Object.values(map)
+    .filter(a => a.excavatorId === excavatorId)
+    .map(a => a.truckId)
+    .sort();
+}
+
 
 export function getStoredTrucks(): Truck[] {
   if (typeof window === 'undefined') return INITIAL_TRUCKS;

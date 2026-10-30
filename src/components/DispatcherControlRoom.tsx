@@ -48,9 +48,11 @@ import {
   getCustomExcavatorsOrder,
   saveCustomExcavatorsOrder,
   getTruckExcavatorAssignments,
+  assignTrucksToExcavator,
   getEquipmentInterventions,
+  sendDispatcherMessage,
 } from '../utils/storage';
-import { playClickSound, playDispatchAlertSound } from '../utils/audio';
+import { playClickSound, playDispatchAlertSound, playLoadConfirmedSound } from '../utils/audio';
 import { getStoredSheetsConfig, GoogleSheetsConfig } from '../utils/googleSheets';
 import { ProductionGapAlertsPanel } from './ProductionGapAlertsPanel';
 import { FuelingMonitoringPanel } from './FuelingMonitoringPanel';
@@ -133,6 +135,8 @@ export const DispatcherControlRoom: React.FC<Props> = ({
   const [selectedTruckForMessage, setSelectedTruckForMessage] = useState<string | null>(null);
   const [isMessengerModalOpen, setIsMessengerModalOpen] = useState(false);
   const [isAssignmentModalOpen, setIsAssignmentModalOpen] = useState(false);
+  const [assignmentTargetExcavatorId, setAssignmentTargetExcavatorId] = useState<string | null>(null);
+  const [assignmentFeedback, setAssignmentFeedback] = useState<string | null>(null);
   const [isInterventionsModalOpen, setIsInterventionsModalOpen] = useState(false);
   const [interventionPreselectedUnitId, setInterventionPreselectedUnitId] = useState<string | null>(null);
   const [interventionsList, setInterventionsList] = useState(getEquipmentInterventions());
@@ -216,6 +220,92 @@ export const DispatcherControlRoom: React.FC<Props> = ({
       console.error('Failed to acknowledge SOS:', err);
     } finally {
       setIsAcknowledgingSos(false);
+    }
+  };
+
+  // Direct 1-click loading unit assignment per dump truck with automated dispatch messaging
+  const handleQuickAssignTruck = (truckId: string, targetExcavatorId: string) => {
+    const truckObj = trucks.find(t => t.id === truckId);
+    const isOutOfService = truckObj?.status === 'BREAKDOWN' || truckObj?.status === 'MAINTENANCE';
+
+    if (isOutOfService && targetExcavatorId !== 'UNASSIGNED') {
+      playDispatchAlertSound();
+      setAssignmentFeedback(`⛔ تنبيه: الدنبر ${truckId} مسجل في حالة (عطل / صيانة خارج الخدمة) ولا يمكن تعيينه للتحميل.`);
+      setTimeout(() => setAssignmentFeedback(null), 4000);
+      return;
+    }
+
+    playLoadConfirmedSound();
+
+    if (!targetExcavatorId || targetExcavatorId === 'UNASSIGNED') {
+      assignTrucksToExcavator([truckId], 'UNASSIGNED');
+      setTruckAssignments(getTruckExcavatorAssignments());
+      setAssignmentFeedback(`⚪ تم إلغاء تخصيص الدنبر ${truckId} وأصبح في وضع التحميل الحر.`);
+      setTimeout(() => setAssignmentFeedback(null), 4000);
+      return;
+    }
+
+    const targetEx = excavators.find(e => e.id === targetExcavatorId);
+    assignTrucksToExcavator(
+      [truckId],
+      targetExcavatorId,
+      activeDispatcher?.name || 'غرفة العمليات المركزية',
+      activeDispatcher?.code || 'DSP',
+      targetEx?.benchLevel,
+      undefined,
+      `تخصيص مباشر من بطاقة الدنبر بواسطة ${activeDispatcher?.name || 'الديسباتشر'}`
+    );
+    setTruckAssignments(getTruckExcavatorAssignments());
+
+    // Send immediate urgent voice/dispatch instruction to the truck tablet
+    const driverName = truckObj?.assignedDriver;
+    const benchDesc = targetEx?.benchLevel ? `بموقع (${targetEx.benchLevel})` : 'في الحفرة المفتوحة';
+    const modelDesc = targetEx?.model ? `طراز ${targetEx.model}` : 'معدة تحميل';
+    const msgText = `🚨 أمر تشغيل فوري: تم تعيينك للعمل مع معدة التحميل [${targetExcavatorId}] (${modelDesc}) ${benchDesc}. توجه فوراً للمعدة لبدء التحميل.`;
+
+    sendDispatcherMessage(
+      truckId,
+      msgText,
+      'URGENT',
+      activeDispatcher?.name ? `الديسباتشر: ${activeDispatcher.name}` : 'غرفة الدسباتش المركزي',
+      driverName
+    );
+
+    setAssignmentFeedback(`✅ تم تعيين الدنبر ${truckId} للعمل مع المعدة [${targetExcavatorId}] وإرسال أمر التحميل الفوري لكابينة السائق 📢`);
+    setTimeout(() => setAssignmentFeedback(null), 5000);
+  };
+
+  const handleQuickAddFreeTruckToExcavator = (excavatorId: string) => {
+    playClickSound();
+    const currentAssignments = getTruckExcavatorAssignments();
+    // Find first truck with no assigned excavator
+    const freeTruck = trucks.find(t => !currentAssignments[t.id]?.excavatorId);
+    if (!freeTruck) {
+      alert('جميع الدنابر الـ 60 مخصصة بالفعل لحفارات، لا توجد دنابر حرة حالياً.');
+      return;
+    }
+    const targetEx = excavators.find(e => e.id === excavatorId);
+    assignTrucksToExcavator(
+      [freeTruck.id],
+      excavatorId,
+      activeDispatcher?.name || 'غرفة العمليات',
+      activeDispatcher?.code || 'DSP',
+      targetEx?.benchLevel,
+      undefined,
+      `تخصيص سريع مباشر بواسطة ${activeDispatcher?.name || 'الديسباتشر'}`
+    );
+    setTruckAssignments(getTruckExcavatorAssignments());
+  };
+
+  const handleClearExcavatorTrucks = (excavatorId: string) => {
+    playClickSound();
+    const currentAssignments = getTruckExcavatorAssignments();
+    const trucksToClear = Object.values(currentAssignments)
+      .filter(a => a.excavatorId === excavatorId)
+      .map(a => a.truckId);
+    if (trucksToClear.length > 0) {
+      assignTrucksToExcavator(trucksToClear, 'UNASSIGNED');
+      setTruckAssignments(getTruckExcavatorAssignments());
     }
   };
 
@@ -982,9 +1072,86 @@ export const DispatcherControlRoom: React.FC<Props> = ({
             )}
           </div>
 
+          {/* Quick Circuit Matrix Bar (توزيع الدنابر على الحفارات) */}
+          <div className="mb-3 p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 flex flex-wrap items-center justify-between gap-2.5 shadow-inner">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black text-slate-200 flex items-center gap-1.5">
+                <span className="text-amber-400 text-sm">⚡</span>
+                <span>توزيع أسطول الدنابر على الحفارات:</span>
+              </span>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold">
+                {Object.keys(truckAssignments).length} من {trucks.length} مخصص
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="flex items-center gap-1 overflow-x-auto max-w-[520px] py-0.5 pr-1">
+                {excavators.map(ex => {
+                  const count = Object.values(truckAssignments).filter(a => a.excavatorId === ex.id).length;
+                  return (
+                    <button
+                      key={ex.id}
+                      type="button"
+                      onClick={() => {
+                        playClickSound();
+                        setAssignmentTargetExcavatorId(ex.id);
+                        setIsAssignmentModalOpen(true);
+                      }}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-mono font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0 ${
+                        count > 0
+                          ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'
+                          : 'bg-slate-900 text-slate-500 border border-slate-800 hover:text-slate-300'
+                      }`}
+                      title={`عرض دنابر الحفار ${ex.id} (${count} دنابر حالياً)`}
+                    >
+                      <span>{ex.id}</span>
+                      <span className={`px-1 py-0.2 rounded text-[9px] ${
+                        count > 0
+                          ? 'bg-emerald-900 text-white'
+                          : 'bg-slate-950 text-slate-500'
+                      }`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound();
+                  setAssignmentTargetExcavatorId(null);
+                  setIsAssignmentModalOpen(true);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition-colors cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
+                title="فتح نافذة التوزيع الشاملة لكل الحفارات"
+              >
+                <span>🚜 ضبط التوزيع الكامل</span>
+              </button>
+            </div>
+          </div>
+
           {/* Sub-view 1: 60 Dump Trucks (DT001-DT060) with Drag & Drop */}
           {fleetTab === 'TRUCKS' && (
             <div className="flex flex-col">
+              {/* Assignment Feedback Toast */}
+              {assignmentFeedback && (
+                <div className="mb-2.5 p-3 px-4 rounded-xl bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 border-2 border-emerald-500/60 text-emerald-200 text-xs font-bold flex items-center justify-between shadow-xl animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 text-base animate-bounce">📢</span>
+                    <span>{assignmentFeedback}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAssignmentFeedback(null)}
+                    className="p-1 text-slate-400 hover:text-white text-xs cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2 p-2 bg-slate-950/70 border border-slate-800/80 rounded-xl text-xs">
                 <div className="flex items-center gap-1.5 text-slate-400">
                   <span className="text-amber-400 font-bold">✨ السحب والإفلات (Drag & Drop):</span>
@@ -1086,6 +1253,52 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                             </span>
                           )}
                         </div>
+
+                        {/* Dedicated Loading Equipment Selector for this truck */}
+                        <div className={`mt-2 p-1.5 rounded-xl border transition-all ${
+                          truckAssignments[truck.id]?.excavatorId
+                            ? 'bg-slate-900/95 border-emerald-500/60 ring-1 ring-emerald-500/30'
+                            : 'bg-slate-950/90 border-slate-800'
+                        }`}>
+                          <div className="flex items-center justify-between text-[10px] font-bold mb-1">
+                            <span className="text-amber-400 flex items-center gap-1">
+                              <span>🏗️ معدة التحميل:</span>
+                            </span>
+                            {truckAssignments[truck.id]?.excavatorId ? (
+                              <span className="font-mono text-[9px] px-1.5 py-0.2 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/40 font-bold">
+                                مع {truckAssignments[truck.id].excavatorId} 🟢
+                              </span>
+                            ) : (
+                              <span className="text-[9px] text-slate-500 font-normal">
+                                تحميل حر ⚪
+                              </span>
+                            )}
+                          </div>
+
+                          <select
+                            value={truckAssignments[truck.id]?.excavatorId || 'UNASSIGNED'}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              handleQuickAssignTruck(truck.id, e.target.value);
+                            }}
+                            disabled={isBreakdown || isMaint}
+                            className={`w-full text-[11px] font-mono font-bold py-1 px-1.5 rounded-lg border focus:outline-none transition-colors ${
+                              isBreakdown || isMaint
+                                ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                                : truckAssignments[truck.id]?.excavatorId
+                                ? 'bg-slate-950 border-emerald-500/60 text-emerald-300 focus:border-emerald-400 cursor-pointer shadow-sm'
+                                : 'bg-slate-950 border-slate-700 text-slate-300 focus:border-amber-400 cursor-pointer'
+                            }`}
+                            title="اختر معدة التحميل لهذا الدنبر وسيصل أمر التحميل الفوري إلى تابلت السائق مع التلاوة الصوتية"
+                          >
+                            <option value="UNASSIGNED">⚪ غير مخصص (تحميل حر)</option>
+                            {excavators.map(ex => (
+                              <option key={ex.id} value={ex.id}>
+                                🚜 {ex.id} — {ex.model} ({ex.benchLevel?.split('(')[0]?.trim() || ex.benchLevel})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <div className="mt-1.5 pt-1 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
                           <span className="text-slate-400">حمولات: <strong className="font-bold font-mono text-emerald-400">{truck.tripsToday || 0}</strong> ({truck.tonnesToday || 0}t)</span>
                           <button
@@ -1127,7 +1340,7 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 max-h-[360px] overflow-y-auto pr-1">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 max-h-[380px] overflow-y-auto pr-1">
                 {orderedExcavators.map(ex => {
                   const isShovel = ex.id.startsWith('SH');
                   const isLoader = ex.id.startsWith('WL');
@@ -1141,13 +1354,19 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                       onDragOver={(e) => handleExcavatorDragOver(e, ex.id)}
                       onDrop={(e) => handleExcavatorDrop(e, ex.id)}
                       onDragEnd={() => { setDraggedExcavatorId(null); setDragOverExcavatorId(null); }}
-                      className={`p-3 rounded-xl border transition-all cursor-grab active:cursor-grabbing select-none group ${
+                      onClick={() => {
+                        playClickSound();
+                        setAssignmentTargetExcavatorId(ex.id);
+                        setIsAssignmentModalOpen(true);
+                      }}
+                      className={`p-3 rounded-xl border transition-all cursor-pointer select-none group ${
                         dragOverExcavatorId === ex.id
                           ? 'border-emerald-400 bg-emerald-500/10 scale-102 ring-2 ring-emerald-400/40 z-10'
                           : draggedExcavatorId === ex.id
                           ? 'opacity-40 border-dashed border-slate-600 bg-slate-900'
-                          : 'bg-slate-950/80 border-slate-800 hover:border-emerald-500/40'
+                          : 'bg-slate-950/80 border-slate-800 hover:border-emerald-500/50 hover:bg-slate-900'
                       }`}
+                      title={`عرض دنابر وموقع الحفار ${ex.id}`}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-1.5">
@@ -1183,6 +1402,84 @@ export const DispatcherControlRoom: React.FC<Props> = ({
                       <div className="text-[9px] text-slate-500 truncate mt-0.5">
                         {ex.model}
                       </div>
+
+                      {/* Dynamic Assigned Dumpers Section */}
+                      {(() => {
+                        const assignedTrucks = Object.values(truckAssignments).filter(a => a.excavatorId === ex.id);
+                        return (
+                          <div className="mt-2 pt-1.5 border-t border-slate-800/80 flex flex-col gap-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                                <span>🚜 الدنابر:</span>
+                                <span className={`font-mono px-1.5 py-0.2 rounded font-black text-[10px] ${
+                                  assignedTrucks.length > 0
+                                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40'
+                                    : 'bg-slate-900 text-slate-500'
+                                }`}>
+                                  {assignedTrucks.length}
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  playClickSound();
+                                  setAssignmentTargetExcavatorId(ex.id);
+                                  setIsAssignmentModalOpen(true);
+                                }}
+                                className="text-[10px] font-bold text-emerald-400 hover:text-emerald-300 bg-emerald-950/90 hover:bg-emerald-900 px-2 py-0.5 rounded-lg border border-emerald-500/40 transition-colors cursor-pointer flex items-center gap-0.5"
+                                title={`تخصيص دنابر الحفار ${ex.id}`}
+                              >
+                                <span>➕ تخصيص</span>
+                              </button>
+                            </div>
+
+                            {/* Assigned truck chips */}
+                            {assignedTrucks.length > 0 ? (
+                              <div className="flex flex-wrap gap-1 max-h-[44px] overflow-y-auto">
+                                {assignedTrucks.map(a => (
+                                  <span
+                                    key={a.truckId}
+                                    className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-slate-900 border border-emerald-500/30 text-emerald-300"
+                                  >
+                                    {a.truckId}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[9px] text-slate-500 italic">لا توجد دنابر مخصصة</span>
+                            )}
+
+                            {/* Fast Action Buttons */}
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleQuickAddFreeTruckToExcavator(ex.id);
+                                }}
+                                className="flex-1 text-[9px] font-bold text-amber-300 hover:text-amber-200 bg-slate-900 hover:bg-slate-850 px-1.5 py-1 rounded border border-slate-700 hover:border-amber-500/50 transition-colors cursor-pointer text-center"
+                                title="إضافة أول دنبر حر غير مخصص إلى هذا الحفار فوراً بنقرة واحدة"
+                              >
+                                ⚡ +1 حر
+                              </button>
+                              {assignedTrucks.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleClearExcavatorTrucks(ex.id);
+                                  }}
+                                  className="text-[9px] font-bold text-rose-400 hover:text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 px-1.5 py-1 rounded border border-rose-800/50 transition-colors cursor-pointer"
+                                  title="إلغاء تخصيص دنابر هذا الحفار"
+                                >
+                                  تفريغ ↺
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 })}
@@ -1366,7 +1663,11 @@ export const DispatcherControlRoom: React.FC<Props> = ({
       {/* TRUCK-TO-EXCAVATOR FLEET CIRCUIT ASSIGNMENT MODAL */}
       <TruckExcavatorAssignmentModal
         isOpen={isAssignmentModalOpen}
-        onClose={() => setIsAssignmentModalOpen(false)}
+        onClose={() => {
+          setIsAssignmentModalOpen(false);
+          setAssignmentTargetExcavatorId(null);
+        }}
+        initialExcavatorId={assignmentTargetExcavatorId}
         excavators={excavators}
         trucks={trucks}
         activeDispatcher={activeDispatcher}
